@@ -13,12 +13,14 @@
         "title": "drumclack",
         "width": 420,
         "height": 460,
+        "minWidth": 340,
+        "minHeight": 400,
         "resizable": true,
         "fullscreen": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {

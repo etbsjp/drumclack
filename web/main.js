@@ -54,10 +54,26 @@ function renderPermission(permission) {
 }
 
 function renderAudio(audio) {
-  els.audioValue.textContent = audio.ok
-    ? `準備完了（${audio.message}）`
-    : `初期化失敗: ${audio.message}`;
+  els.audioValue.innerHTML = "";
   setStateClass(els.audioValue, audio.ok ? "state-ok" : "state-error");
+
+  if (audio.ok) {
+    const text = document.createElement("span");
+    text.textContent = `準備完了（${audio.message}）`;
+    els.audioValue.appendChild(text);
+    return;
+  }
+
+  // 失敗時は、内部エラー文字列をそのまま出すのではなく、次に何をすればいいかを先に示す。
+  // 内部エラー文字列は「詳細」として下に残す。
+  const hint = document.createElement("span");
+  hint.textContent = "次の操作: 他のアプリで使用中でないか確認し、drumclack を再起動してください。";
+  els.audioValue.appendChild(hint);
+
+  const detail = document.createElement("span");
+  detail.className = "detail-text";
+  detail.textContent = `詳細: ${audio.message}`;
+  els.audioValue.appendChild(detail);
 }
 
 function renderLastPlay(lastPlayMs) {
@@ -97,9 +113,18 @@ async function poll() {
     const status = await invoke("get_status");
     render(status);
   } catch (err) {
-    // 状態取得自体に失敗した場合も、画面上でわかるようにしておく。
-    els.audioValue.textContent = `状態の取得に失敗しました: ${err}`;
+    // 状態取得自体に失敗した場合も、次の行動を先に示す（内部エラーは詳細として残す）。
+    els.audioValue.innerHTML = "";
     setStateClass(els.audioValue, "state-error");
+
+    const hint = document.createElement("span");
+    hint.textContent = "次の操作: drumclack を再起動してください。";
+    els.audioValue.appendChild(hint);
+
+    const detail = document.createElement("span");
+    detail.className = "detail-text";
+    detail.textContent = `詳細: 状態の取得に失敗しました（${err}）`;
+    els.audioValue.appendChild(detail);
   } finally {
     setTimeout(poll, POLL_INTERVAL_MS);
   }

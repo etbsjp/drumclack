@@ -1,5 +1,8 @@
 name: Build and test
 
+permissions:
+  contents: read
+
 # 常駐型タイピングドラムの成立性検証プロトタイプ。
 # macOS / Windows それぞれでビルドとテストを行い、未署名のビルド成果物を
 # アーティファクトとしてアップロードする。署名・インストーラー作成は行わない。

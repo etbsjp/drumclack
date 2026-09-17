@@ -4,7 +4,7 @@
   --bg: #ffffff;
   --fg: #1a1a1a;
   --muted: #595959; /* #fff 背景に対し約 6.4:1 */
-  --border: #d0d0d0;
+  --border: #8a8a8a; /* #fff 背景に対し約 3.3:1（WCAG AA UIコンポーネント基準） */
 
   --ok-fg: #1e6b2f; /* #fff 背景に対し約 5.4:1 */
   --warn-fg: #8a4b00; /* #fff 背景に対し約 5.2:1 */
@@ -19,7 +19,7 @@
     --bg: #1e1f22;
     --fg: #f2f2f2;
     --muted: #b7b9bd; /* 背景に対し約 8.5:1 */
-    --border: #45464a;
+    --border: #757575; /* 背景に対し約 3.6:1（WCAG AA UIコンポーネント基準） */
 
     --ok-fg: #7fd894; /* 背景に対し約 9.8:1 */
     --warn-fg: #f0b459; /* 背景に対し約 9.7:1 */
@@ -34,7 +34,7 @@
   --bg: #1e1f22;
   --fg: #f2f2f2;
   --muted: #b7b9bd;
-  --border: #45464a;
+  --border: #757575;
 
   --ok-fg: #7fd894;
   --warn-fg: #f0b459;
@@ -99,6 +99,7 @@ h1 {
 dt {
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap; /* 短いラベルの語中改行を防ぐ */
 }
 
 dd {
@@ -125,6 +126,15 @@ dd.state-error {
   font-size: 13px;
   font-weight: 400;
   color: var(--fg);
+}
+
+/* エラー文言の「詳細」（内部エラー文字列）用。次の行動より弱い扱いにする。 */
+.detail-text {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
 }
 
 .test-mode {
