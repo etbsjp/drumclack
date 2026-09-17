@@ -1,0 +1,138 @@
+:root {
+  color-scheme: light dark;
+
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #595959; /* #fff 背景に対し約 6.4:1 */
+  --border: #d0d0d0;
+
+  --ok-fg: #1e6b2f; /* #fff 背景に対し約 5.4:1 */
+  --warn-fg: #8a4b00; /* #fff 背景に対し約 5.2:1 */
+  --error-fg: #b3261e; /* #fff 背景に対し約 5.3:1 */
+
+  --test-bg: #3a2d00;
+  --test-fg: #ffe8a3; /* --test-bg に対し約 10:1 以上 */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1e1f22;
+    --fg: #f2f2f2;
+    --muted: #b7b9bd; /* 背景に対し約 8.5:1 */
+    --border: #45464a;
+
+    --ok-fg: #7fd894; /* 背景に対し約 9.8:1 */
+    --warn-fg: #f0b459; /* 背景に対し約 9.7:1 */
+    --error-fg: #ff9a90; /* 背景に対し約 8.9:1 */
+
+    --test-bg: #4a3900;
+    --test-fg: #ffe8a3;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #1e1f22;
+  --fg: #f2f2f2;
+  --muted: #b7b9bd;
+  --border: #45464a;
+
+  --ok-fg: #7fd894;
+  --warn-fg: #f0b459;
+  --error-fg: #ff9a90;
+
+  --test-bg: #4a3900;
+  --test-fg: #ffe8a3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic",
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+main {
+  padding: 24px;
+  max-width: 480px;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0 0 4px;
+}
+
+.lead {
+  margin: 0 0 20px;
+  color: var(--ok-fg);
+  font-weight: 600;
+}
+
+.status-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  /* 情報グループ内（項目同士）の余白 */
+  gap: 14px;
+}
+
+.status-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px; /* ラベルと値の最小単位の余白 */
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.status-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+dd.state-ok {
+  color: var(--ok-fg);
+}
+
+dd.state-warn {
+  color: var(--warn-fg);
+}
+
+dd.state-error {
+  color: var(--error-fg);
+}
+
+.action-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--fg);
+}
+
+.test-mode {
+  margin-top: 20px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--test-bg);
+  color: var(--test-fg);
+  font-weight: 600;
+  font-size: 13px;
+}
