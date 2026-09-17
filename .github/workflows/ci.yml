@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# checkout・build・test・lint のみを行い、リポジトリへの書き込みは行わないため read 権限のみにする。
+permissions:
+  contents: read
+
 jobs:
   latency-tests:
     name: tools/latency cargo test
