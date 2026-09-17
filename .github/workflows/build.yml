@@ -7,27 +7,20 @@ permissions:
 # macOS / Windows それぞれでビルドとテストを行い、未署名のビルド成果物を
 # アーティファクトとしてアップロードする。署名・インストーラー作成は行わない。
 #
-# CI の起動タイミングについては vk-agents のルール
-# （run-ci ラベル付与時と、リリース時のみ）に従う。
+# 公開リポジトリでActionsは無料のため、PRと main への push で常に実行する
+# （run-ci ラベルによるジョブ内 if 条件でのゲートは行わない）。
 
 on:
-  # 運用方針: CI は「人が手動で run-ci ラベルを付けたとき」と「リリース時
-  # （v から始まるタグの push）」のみ実行する。PR への push を素通しで
-  # 拾うと、エージェントが作った PR でも自動的に CI が走ってしまうため、
-  # ラベルの有無を job 側の if 条件で判定する。
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
 
 jobs:
   build-and-test:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'run-ci')
     strategy:
       fail-fast: false
       matrix:

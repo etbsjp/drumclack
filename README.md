@@ -66,7 +66,7 @@ Windows 版は GitHub Actions のビルド成果物（アーティファクト�
 3. `Artifacts` から `drumclack-windows` をダウンロードして展開する
 4. 展開した `drumclack.exe` を実行する（未署名のため、初回起動時に Windows Defender SmartScreen の警告が出る場合があります）
 
-CI は人が `run-ci` ラベルを付けたとき、または `v` から始まるタグを push したとき（リリース時）にのみ実行されます。
+CI は Pull Request・`main` ブランチへの push・`v` から始まるタグの push のたびに実行されます。
 **GitHub Actions の Windows 環境では、実際にキー入力を検知できるかの動作確認はできません**（対話的なログイン
 セッションや権限の都合）。CI で確認しているのは「ビルドとユニットテストが通ること」のみです。
 
@@ -95,14 +95,32 @@ DRUMCLACK_TEST_DELAY_MS=200 cargo run --manifest-path src-tauri/Cargo.toml
 
 ### キー入力の取得方法（`src-tauri/src/keyboard.rs`）
 
-OS全体からのキー入力取得には [`rdev`](https://crates.io/crates/rdev) クレートの `listen()` を採用しました。
+macOSとWindowsで異なる方式を採用しています。
 
-- **macOS**: `rdev::listen` は内部で `CGEventTap` を **listen-only モード**（`kCGEventTapOptionListenOnly`）
-  で張ります。これは他アプリへのイベント伝播を止めない“傍受のみ”のタップで、必要な権限も
+- **macOS**: `CGEventTap` を **listen-only モード**（`kCGEventTapOptionListenOnly`）で、
+  外部クレートを介さず直接 FFI で張っています（`src-tauri/src/keyboard.rs` の `macos_tap`
+  モジュール）。これは他アプリへのイベント伝播を止めない“傍受のみ”のタップで、必要な権限も
   「アクセシビリティ」ではなく **「入力監視（Input Monitoring）」のみ** で済みます。
-  「受信のみ・他アプリの入力を妨げない」という要件にそのまま合致するため採用しました。
-- **Windows**: `rdev::listen` は `SetWindowsHookEx(WH_KEYBOARD_LL, ...)` による**低レベルキーボードフック**を
-  使います。これも受信専用で、フック内でイベントを握りつぶす（消費してブロックする）ことはありません。
+  「受信のみ・他アプリの入力を妨げない」という要件にそのまま合致します。
+
+  **`rdev` クレートを使わない理由**: 当初は [`rdev`](https://crates.io/crates/rdev) の `listen()`
+  （内部実装は同じく listen-only の `CGEventTap`）を使っていましたが、`rdev` はキーイベントごとに
+  `TSMGetInputSourceProperty` など HIToolbox の入力ソース関連 API を内部で呼び出しており、
+  macOS 15 以降ではメインスレッド以外からこれらを呼ぶと `dispatch_assert_queue_fail` で
+  アプリごと停止する事例が報告されています（[tauri-apps/tauri#7839（discussion）
+  “rdev breaks the app on key press”](https://github.com/tauri-apps/tauri/discussions/7839)、
+  [dsh-tauri-desk/deepseek-harness-desktop#398](https://github.com/dsh-tauri-desk/deepseek-harness-desktop/pull/398)
+  では `rdev` 0.5.3 のこの問題を `CGEventTap` 直接監視への切り替えで回避したと報告されています）。
+  `keyboard::spawn_listener` は `thread::spawn` した別スレッドから監視を開始する実装のため、
+  このリポジトリでも該当しうる問題でした。押されたキーを文字列化する必要はそもそも無い
+  （時刻のみ扱う）ため、キーコード→文字列変換の一切無い、HIToolboxに触れない素の
+  `CGEventTap` 直叩きへ切り替えています。
+- **Windows**: 引き続き [`rdev`](https://crates.io/crates/rdev) の `listen()` を使っています
+  （`src-tauri/src/keyboard.rs` の `rdev_listener` モジュール、`Cargo.toml` では
+  macOS以外向けの依存として限定）。内部で `SetWindowsHookEx(WH_KEYBOARD_LL, ...)` による
+  **低レベルキーボードフック**を使い、これも受信専用でフック内でイベントを握りつぶす
+  （消費してブロックする）ことはありません。上記のmacOS固有の問題はWindowsには当てはまらないため、
+  こちらは変更していません。
 
 権限確認（macOS のみ、`src-tauri/src/permission.rs`）には `IOHIDCheckAccess`（IOKit / `IOHIDLib.h`、
 macOS 10.15+ で公開されている API）を使っています。これはプロンプトを出さず、現在の許可状態
