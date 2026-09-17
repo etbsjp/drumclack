@@ -1,0 +1,19 @@
+[package]
+name = "latency"
+version = "0.1.0"
+edition = "2021"
+description = "打鍵音（クリック音）から発音（キック音等）までの遅延を WAV ファイルから計測する CLI ツール"
+license = "GPL-2.0-or-later"
+publish = false
+
+[dependencies]
+hound = "3"
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "latency"
+path = "src/main.rs"
+
+[lib]
+name = "latency"
+path = "src/lib.rs"

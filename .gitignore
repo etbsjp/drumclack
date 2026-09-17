@@ -44,3 +44,6 @@ secrets/
 
 # Measurement recordings (latency tests)
 recordings/
+
+# Measurement outputs (resource monitor CSV logs)
+tools/resources/*.csv

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  latency-tests:
+    name: tools/latency cargo test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/latency
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo build
+        run: cargo build --verbose
+
+      - name: cargo test
+        run: cargo test --verbose
+
+  resources-scripts-lint:
+    name: tools/resources syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n (シェルスクリプトの構文チェック)
+        run: bash -n tools/resources/record_mac.sh
+
+      - name: shellcheck
+        run: shellcheck tools/resources/record_mac.sh
+
+      - name: PowerShell スクリプトの構文チェック
+        shell: pwsh
+        run: |
+          $errorsFound = $null
+          $tokens = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            "tools/resources/record_windows.ps1", [ref]$tokens, [ref]$errorsFound
+          )
+          if ($errorsFound.Count -gt 0) {
+            $errorsFound | ForEach-Object { Write-Host $_.Message }
+            exit 1
+          }
+          Write-Host "Parse OK"
