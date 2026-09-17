@@ -44,3 +44,9 @@ secrets/
 
 # Measurement recordings (latency tests)
 recordings/
+
+# Measurement outputs (resource monitor CSV logs)
+# tools/resources/ 配下限定にすると、実行時のカレントディレクトリ次第で出力先が
+# リポジトリルート等になった場合に無視されず誤コミットされうるため、実行場所に
+# よらず防げるようパターンをリポジトリ全体に広げる。
+*.csv
