@@ -1,0 +1,26 @@
+[package]
+name = "drumclack"
+version = "0.1.0"
+description = "常駐型タイピングドラム アプリの成立性検証プロトタイプ"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 音声合成・再生。
+cpal = "0.15"
+
+# Windows のキー入力「受信専用」フック（WH_KEYBOARD_LL）に使用。
+# macOS は rdev を使わず、CGEventTap への直接 FFI（src/keyboard.rs 内の
+# macos_tap モジュール）に切り替えた。選定理由は README を参照。
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+rdev = "0.5"
+
+[profile.release]
+panic = "unwind"

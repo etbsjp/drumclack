@@ -1,0 +1,64 @@
+name: Build and test
+
+permissions:
+  contents: read
+
+# 常駐型タイピングドラムの成立性検証プロトタイプ。
+# macOS / Windows それぞれでビルドとテストを行い、未署名のビルド成果物を
+# アーティファクトとしてアップロードする。署名・インストーラー作成は行わない。
+#
+# 公開リポジトリでActionsは無料のため、PRと main への push で常に実行する
+# （run-ci ラベルによるジョブ内 if 条件でのゲートは行わない）。
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: drumclack
+            artifact_path: src-tauri/target/release/drumclack
+            artifact_label: drumclack-macos
+          - os: windows-latest
+            artifact_name: drumclack.exe
+            artifact_path: src-tauri/target/release/drumclack.exe
+            artifact_label: drumclack-windows
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 注意: Windows ランナーではキー入力フックの実際の動作確認はできない
+      # （GUIセッション・権限の都合）。ここではビルドが通ることのみ確認する。
+      - name: Run unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --release
+
+      - name: Build release binary
+        run: cargo build --manifest-path src-tauri/Cargo.toml --release
+
+      - name: Upload unsigned build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_label }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error

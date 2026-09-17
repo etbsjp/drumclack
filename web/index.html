@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>drumclack</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>drumclack</h1>
+      <p id="running" class="lead">常駐稼働中</p>
+
+      <dl class="status-list">
+        <div id="row-permission" class="status-row" hidden>
+          <dt>入力監視の権限</dt>
+          <dd id="permission-value" aria-live="polite" aria-atomic="true">確認中…</dd>
+        </div>
+
+        <div class="status-row">
+          <dt>音声デバイス</dt>
+          <dd id="audio-value" aria-live="polite" aria-atomic="true">確認中…</dd>
+        </div>
+
+        <div class="status-row">
+          <dt>直近の発音</dt>
+          <dd id="last-play-value">待機中</dd>
+        </div>
+
+        <div class="status-row">
+          <dt>同時発音数</dt>
+          <dd id="voices-value">0 / 16</dd>
+        </div>
+      </dl>
+
+      <p id="test-mode" class="test-mode" hidden></p>
+    </main>
+    <script src="./main.js"></script>
+  </body>
+</html>
