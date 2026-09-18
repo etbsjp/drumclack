@@ -12,6 +12,20 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crate::kick;
 use crate::voices::VoicePool;
 
+/// 1音あたりの基本ゲイン。フルスケール(1.0)のまま合算すると、複数ボイスが
+/// 同じ位相で重なった場合に大きく超えてしまう（16音なら理論上14.4）ため、
+/// あらかじめ抑えておく。値は「16音重なってもソフトクリップの飽和域に
+/// 極端に長く留まらない」程度を目安に決め打ちしている（試作段階）。
+const VOICE_GAIN: f32 = 0.3;
+
+/// ソフトクリップ。`tanh` でなめらかに ±1.0 へ飽和させる。
+/// `clamp` のような急激な折れ線と違い、入力が大きくなるほど徐々に
+/// 傾きが緩んでいくため、複数ボイスが重なって一時的に大きな値になっても
+/// 矩形波的な硬い歪みにならない。
+fn soft_clip(x: f32) -> f32 {
+    x.tanh()
+}
+
 /// 合成・再生を担うエンジン本体。
 /// cpal の `Stream` はここでは保持せず [`OutputStream`] 側が握る
 /// （`Stream` は `Send` だが UI スレッドで drop されないよう別途管理する）。
@@ -51,15 +65,21 @@ impl AudioEngine {
     /// 抑えていたため、鳴っている間ずっと出力が ±1.0 に張り付く矩形波になり
     /// 激しく音割れしていた（issue #6 原因C）。
     ///
-    /// 同時発音数 `N` で割ることで、各ボイスの振幅が [`kick::PEAK_AMPLITUDE`]
-    /// に収まっている限り、合算後も同じ範囲に収まることを保証する
-    /// （= 何音重なっても理論上クリップしない）。`clamp` はそれでも保険として
-    /// 残すが、通常の合成波形では発火しない想定。
+    /// その次に「同時発音数 `N` で割る」方式を試したが、新しい音が重なった
+    /// 瞬間（＝`N` が変化する瞬間）に既存の音の音量が不連続にジャンプして
+    /// しまい、末尾の段差（issue #6 原因B）とほぼ同じ大きさの「プツッ」を
+    /// 重なりの瞬間へ移しただけになっていた（PR #7 のレビューで実測確認）。
+    /// ゲインが同時発音数に依存する限り、発音数が変わる瞬間に必ず不連続点が
+    /// できてしまうため、この方式は採用しない。
+    ///
+    /// 代わりに、**同時発音数に依存しない固定ゲイン（[`VOICE_GAIN`]）を掛けた
+    /// うえで [`soft_clip`] をかける**方式にする。ゲインが一定なので、発音数の
+    /// 増減で既存の音の音量がジャンプすることはない。合算値が大きくなり得る分
+    /// （複数ボイスが重なった場合）は `tanh` でなめらかに飽和させ、`clamp` の
+    /// ような急激な折れ線（矩形波化）を避ける。
     fn mix_locked(pool: &mut VoicePool, kick: &[f32]) -> f32 {
-        let active = pool.active_count();
         let mixed = pool.mix_next_sample(kick);
-        let sample = if active > 0 { mixed / active as f32 } else { 0.0 };
-        sample.clamp(-1.0, 1.0)
+        soft_clip(mixed * VOICE_GAIN)
     }
 
     /// オーディオコールバックから呼ばれる。1サンプル分の出力を返す。
@@ -237,10 +257,9 @@ mod tests {
 
         // 以前は合算後を clamp するだけだったため、16音同時では合計が最大14.4
         // まで達し、鳴っている間ほぼ全区間で ±1.0 に張り付く矩形波になっていた
-        // （クリップ率は非常に高い）。同時発音数に応じたゲイン補正後は、
-        // 各ボイスの振幅が PEAK_AMPLITUDE(0.9) に収まっている限り合算後も
-        // 収まる（理論上クリップしない）ため、張り付いたサンプルの割合は
-        // ごく小さいはず。
+        // （クリップ率は非常に高い）。固定ゲイン（VOICE_GAIN）＋ソフトクリップ
+        // （tanh）後は、16音同時でも tanh が飽和域に留まる区間はごく短い
+        // （鳴り始めの数十ms程度）ため、張り付いたサンプルの割合は小さいはず。
         let clipped_ratio = clipped as f32 / total as f32;
         assert!(
             clipped_ratio < 0.05,
@@ -271,6 +290,57 @@ mod tests {
         assert_eq!(
             buffered, per_sample,
             "バッファ単位でロックしても1サンプルずつロックした場合と同じ出力になるはず"
+        );
+    }
+
+    // PR #7 で指摘された回帰: 「同時発音数で割る」方式（原因Cの旧対応）は、
+    // 新しい音が重なった瞬間に既存の音の音量を不連続に変化させてしまい、
+    // 末尾の段差（issue #6 原因B）とほぼ同じ大きさの「プツッ」を、
+    // 重なりの瞬間へ移しただけになっていた（実測: 2音目で段差0.0796、
+    // 3音目で0.0927）。基準値には、キック波形そのものが元々持っている
+    // 自然な隣接差の最大値（生の `synthesize_kick` から計測。実測で約0.0177）
+    // を使う。エンジン出力（ゲイン・ソフトクリップ適用後）はこれよりさらに
+    // 小さいスケールになるはずなので、この基準を安全に使える。
+    // 100ms間隔で2音・3音を重ねても、エンジン出力の隣接サンプル差の最大値が
+    // この基準を超えないことを確認する。
+    #[test]
+    fn overlapping_voices_do_not_create_larger_step_than_single_voice() {
+        let sample_rate = 44_100;
+
+        // 基準値: キック波形（生の合成波形、ゲイン・クリップ適用前）が
+        // 単発再生時に自然に持つ隣接サンプル差の最大値。
+        let raw_kick = kick::synthesize_kick(sample_rate);
+        let single_max_diff = raw_kick
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0_f32, f32::max);
+
+        // 100ms間隔で2音目・3音目をトリガーし、重なりの瞬間を跨いで
+        // 波形の全長分＋余裕を観測する。
+        let overlap = AudioEngine::new(sample_rate);
+        let interval = (0.1 * sample_rate as f32) as usize; // 100ms
+        let total = raw_kick.len() + interval * 2;
+
+        assert!(overlap.trigger());
+        let mut overlap_samples = Vec::with_capacity(total);
+        for i in 0..total {
+            if i == interval {
+                assert!(overlap.trigger(), "2音目");
+            }
+            if i == interval * 2 {
+                assert!(overlap.trigger(), "3音目");
+            }
+            overlap_samples.push(overlap.next_sample());
+        }
+        let overlap_max_diff = overlap_samples
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0_f32, f32::max);
+
+        assert!(
+            overlap_max_diff <= single_max_diff,
+            "重なりの瞬間に単発時より大きな段差が生じています（プツッというノイズになる）: \
+             overlap={overlap_max_diff} single={single_max_diff}"
         );
     }
 
