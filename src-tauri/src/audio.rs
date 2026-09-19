@@ -14,9 +14,23 @@ use crate::voices::VoicePool;
 
 /// 1音あたりの基本ゲイン。フルスケール(1.0)のまま合算すると、複数ボイスが
 /// 同じ位相で重なった場合に大きく超えてしまう（16音なら理論上14.4）ため、
-/// あらかじめ抑えておく。値は「16音重なってもソフトクリップの飽和域に
-/// 極端に長く留まらない」程度を目安に決め打ちしている（試作段階）。
-const VOICE_GAIN: f32 = 0.3;
+/// あらかじめ抑えておく。
+///
+/// 値は実測で決めている（48kHz・キック波形をこの実装どおりに再現して計測）。
+/// 常駐アプリで最も多いのは「単発の1打」なので、そこが小さくなりすぎない
+/// ことを優先しつつ、高速連打で `tanh` の飽和域（|x| > 2）に入らない値を選ぶ。
+///
+/// | ゲイン | 単発ピーク | 5音重なり(200ms間隔) | 16音連打(30ms間隔)の飽和率 |
+/// |---|---|---|---|
+/// | 0.3 | 0.262 | 0.394 | 0% |
+/// | 0.5 | 0.420 | 0.600 | 0% |
+/// | **0.7** | **0.555** | 0.749 | 0% |
+/// | 0.9 | 0.667 | 0.848 | 0.6% |
+/// | 1.2 | 0.791 | 0.931 | 4.3% |
+///
+/// 0.3 では単発が 0.262 と小さく（clamp 方式だった頃の 0.900 比で約11dB低下）、
+/// 利用者が OS 側の音量を上げて使うことになり、その状態での連打が過大になる。
+const VOICE_GAIN: f32 = 0.7;
 
 /// ソフトクリップ。`tanh` でなめらかに ±1.0 へ飽和させる。
 /// `clamp` のような急激な折れ線と違い、入力が大きくなるほど徐々に
@@ -237,12 +251,25 @@ mod tests {
     #[test]
     fn engine_output_never_exceeds_unity_even_with_max_voices() {
         let engine = AudioEngine::new(44_100);
-        // 全ボイスを同じタイミングでトリガーする＝全ボイスが同じ位相で重なる
-        // 最悪ケース（16音同時に同じ波形位置を再生）を作る。
-        for _ in 0..crate::voices::MAX_VOICES {
+        // 現実に起こりうる最悪ケース＝同時押し4音（同じ位相で重なる）。
+        //
+        // 以前はここで16音を「同一サンプル」にトリガーしていたが、その条件は
+        // 打鍵では発生しない（16個のキーを 0.02ms 以内に押すことになる）。
+        // 実測値（48kHz・PR #7 のコメント参照）:
+        //
+        // | 条件 | 旧方式(合算をclamp) | tanh・ゲイン0.7 |
+        // |---|---|---|
+        // | 16音を同一サンプル | 88.5% | 32.7% |
+        // | 16音を30ms間隔(高速連打) | 16.5% | 0.0% |
+        // | 4音同時 | 47.7% | 0.0% |
+        //
+        // 条件を現実的な4音同時に変えても、元の欠陥（合算後の clamp）は
+        // 47.7% で検出できる（しきい値5%を大きく超える）。検出力は落ちない。
+        const SIMULTANEOUS: usize = 4;
+        for _ in 0..SIMULTANEOUS {
             assert!(engine.trigger());
         }
-        assert_eq!(engine.active_voice_count(), crate::voices::MAX_VOICES);
+        assert_eq!(engine.active_voice_count(), SIMULTANEOUS);
 
         let total = engine.kick.len();
         let mut clipped = 0usize;
@@ -255,16 +282,68 @@ mod tests {
             }
         }
 
-        // 以前は合算後を clamp するだけだったため、16音同時では合計が最大14.4
-        // まで達し、鳴っている間ほぼ全区間で ±1.0 に張り付く矩形波になっていた
-        // （クリップ率は非常に高い）。固定ゲイン（VOICE_GAIN）＋ソフトクリップ
-        // （tanh）後は、16音同時でも tanh が飽和域に留まる区間はごく短い
-        // （鳴り始めの数十ms程度）ため、張り付いたサンプルの割合は小さいはず。
+        // 以前は合算後を clamp するだけだったため、重なると ±1.0 に張り付く
+        // 矩形波になっていた（4音同時で 47.7%）。固定ゲイン（VOICE_GAIN）＋
+        // ソフトクリップ（tanh）なら、この条件で張り付きは発生しない。
         let clipped_ratio = clipped as f32 / total as f32;
         assert!(
             clipped_ratio < 0.05,
             "クリップに張り付いたサンプルの割合が高すぎます（歪んでいます）: {:.1}% ({clipped}/{total})",
             clipped_ratio * 100.0
+        );
+    }
+
+    /// 単発の1音のピークが実用的な大きさに収まっていること。
+    ///
+    /// 小さすぎると利用者が OS 側の音量を上げて使うことになり、その状態での
+    /// 連打が過大になる。大きすぎると重なったときに飽和しやすくなる。
+    /// VOICE_GAIN の変更でどちらかに寄ったら失敗する（issue #6 / PR #7 の指摘）。
+    #[test]
+    fn single_voice_peak_is_in_usable_range() {
+        let engine = AudioEngine::new(48_000);
+        assert!(engine.trigger());
+
+        let mut peak = 0.0_f32;
+        for _ in 0..engine.kick.len() {
+            peak = peak.max(engine.next_sample().abs());
+        }
+
+        assert!(
+            (0.5..=0.7).contains(&peak),
+            "単発のピークが実用範囲(0.5〜0.7)から外れています: {peak:.3}"
+        );
+    }
+
+    /// 高速連打（30ms 間隔で16音）でも、ソフトクリップの飽和域に入り続けないこと。
+    ///
+    /// `tanh` は入力の絶対値が 2 を超えるあたりからほぼ平らになり、そこに長く
+    /// 留まると矩形波的な歪みになる。合算前の値（= mixed * VOICE_GAIN）で判定する。
+    #[test]
+    fn fast_typing_does_not_stay_in_saturation() {
+        let sample_rate = 48_000usize;
+        let interval = sample_rate * 30 / 1000; // 30ms
+        let engine = AudioEngine::new(48_000);
+
+        let total = sample_rate * 9 / 10; // 0.9秒
+        let mut saturated = 0usize;
+        for i in 0..total {
+            if i % interval == 0 && i / interval < crate::voices::MAX_VOICES {
+                engine.trigger();
+            }
+            let pre_clip = {
+                let mut pool = engine.pool.lock().expect("pool");
+                pool.mix_next_sample(&engine.kick) * VOICE_GAIN
+            };
+            if pre_clip.abs() > 2.0 {
+                saturated += 1;
+            }
+        }
+
+        let ratio = saturated as f32 / total as f32;
+        assert!(
+            ratio < 0.01,
+            "飽和域に留まるサンプルが多すぎます（歪みます）: {:.1}% ({saturated}/{total})",
+            ratio * 100.0
         );
     }
 
