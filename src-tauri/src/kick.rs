@@ -19,6 +19,19 @@ struct KickParams {
     /// 音全体の長さ（秒）。この長さでバッファを打ち切る。
     duration_sec: f32,
     /// 末尾のフェードアウトにかける時間（秒）。
+    ///
+    /// 値は実測で決めている。この音の低い側は 45Hz＝1周期 22ms なので、
+    /// フェードが1周期より短いと波の途中で断ち切られて不自然に聞こえる
+    /// （8ms では 0.4 周期しかなかった）。また `duration_sec` を伸ばして
+    /// フェード開始時点の音量を十分下げておく必要がある。
+    ///
+    /// | 長さ / フェード | フェード開始時の音量 | フェード長(周期数) |
+    /// |---|---|---|
+    /// | 0.45s / 8ms（旧） | 0.186 | 0.4 |
+    /// | 0.45s / 40ms | 0.208 | 1.8 |
+    /// | 0.70s / 40ms | 0.085 | 1.8 |
+    /// | **0.90s / 60ms** | **0.045**（約 -28dB） | **2.7** |
+    ///
     /// `duration_sec` で打ち切った時点ではまだ振幅が残っている
     /// （`exp(-duration_sec/amp_decay_sec)` 分の音量がある）ため、
     /// フェードなしでは最終サンプルと後続の無音との間に不自然な段差
@@ -31,8 +44,8 @@ const KICK_PARAMS: KickParams = KickParams {
     end_freq_hz: 45.0,
     pitch_decay_sec: 0.035,
     amp_decay_sec: 0.28,
-    duration_sec: 0.45,
-    fade_out_sec: 0.008,
+    duration_sec: 0.9,
+    fade_out_sec: 0.06,
 };
 
 /// 波形の最大振幅。音割れ（クリッピング）防止のための上限だが、
@@ -71,9 +84,14 @@ pub fn synthesize_kick(sample_rate: u32) -> Vec<f32> {
         let amp = (-t / p.amp_decay_sec).exp();
 
         // 末尾のフェードアウト: 残り時間が fade_out_sec を下回ったら
-        // 1.0 から 0.0 へ線形に収束させる（それより前は 1.0 で無効化）。
+        // 1.0 から 0.0 へ収束させる（それより前は 1.0 で無効化）。
+        //
+        // カーブは線形ではなく余弦（raised cosine）にする。線形だとフェードの
+        // 開始点と終了点で包絡線の傾きが折れ、そこが耳につく。余弦なら両端で
+        // 傾きが 0 になり、なめらかに繋がる。
         let time_to_end = p.duration_sec - t;
-        let fade = (time_to_end / p.fade_out_sec).clamp(0.0, 1.0);
+        let fade_ratio = (time_to_end / p.fade_out_sec).clamp(0.0, 1.0);
+        let fade = 0.5 - 0.5 * (std::f32::consts::PI * fade_ratio).cos();
 
         phase += freq * dt;
         let raw = (std::f32::consts::TAU * phase).sin();
