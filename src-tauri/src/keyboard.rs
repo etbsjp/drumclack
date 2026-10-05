@@ -51,9 +51,9 @@ fn handle_key_down(engine: Arc<AudioEngine>, state: Arc<AppState>) {
 }
 
 fn trigger(engine: &AudioEngine, state: &AppState) {
-    // 上限（16音）に達している場合、trigger() は何もせず false を返す。
-    // その場合も直近発音時刻は更新しない（実際には鳴っていないため）。
-    if engine.trigger() {
+    // キットに無い名前・待ち行列あふれのとき play() は何もせず false を返す。
+    // その場合は直近発音時刻を更新しない。音の名前の割り当ては後続の issue で行う。
+    if engine.play("kick", 0, 1.0) {
         state.record_play_now();
     }
 }
