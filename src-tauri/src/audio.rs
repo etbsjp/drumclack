@@ -5,6 +5,7 @@
 //! コールバック（別スレッド）から行われるため、[`voices::VoicePool`] は
 //! `Mutex` で共有する。
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -115,7 +116,7 @@ impl AudioEngine {
     /// 毎秒48,000回ロックが発生し、キー入力側の `trigger()` とロック競合して
     /// 待機時CPUが上昇する原因になっていた（issue #6 原因D）。
     /// ロックをバッファ単位（cpalのコールバック1回につき1回）に減らすことで、
-    /// ロック回数をバッファサイズ分の1（既定バッファ512フレームなら約1/512）
+    /// ロック回数をバッファサイズ分の1（希望バッファ128フレームなら約1/128）
     /// に減らし、待機時CPUをほぼ0%に抑える。
     fn fill_output(&self, data: &mut [f32], channels: usize) {
         let mut pool = match self.pool.lock() {
@@ -178,6 +179,21 @@ pub fn spawn_output_stream() -> Result<Arc<AudioEngine>, String> {
     rx.recv().map_err(|_| "音声出力スレッドの初期化応答を受信できませんでした。".to_string())?
 }
 
+/// 希望バッファ長（フレーム数）。低遅延のため小さめを希望する（issue #5）。
+const PREFERRED_BUFFER_FRAMES: u32 = 128;
+
+/// 希望バッファ長をデバイスの対応範囲へ丸める。
+/// 範囲があれば `[min, max]` に収め、範囲不明ならデバイス既定値に委ねる。
+fn resolve_buffer_size(preferred: u32, supported: &cpal::SupportedBufferSize) -> cpal::BufferSize {
+    match supported {
+        cpal::SupportedBufferSize::Range { min, max } => {
+            // min > max の異常値でも clamp が panic しないよう手で丸める。
+            cpal::BufferSize::Fixed(preferred.max(*min).min(*max))
+        }
+        cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Default,
+    }
+}
+
 /// デフォルトの出力デバイスを開き、[`AudioEngine`] と再生ストリームを構築する。
 /// 呼び出し元スレッドの外へ `cpal::Stream` を持ち出さない前提の内部関数。
 fn build_stream() -> Result<(Arc<AudioEngine>, cpal::Stream), String> {
@@ -195,14 +211,10 @@ fn build_stream() -> Result<(Arc<AudioEngine>, cpal::Stream), String> {
     let sample_rate = supported_config.sample_rate().0;
 
     // バッファサイズは低遅延寄りの値を希望するが、デバイスが対応する範囲に
-    // 収まらない場合は要求せず（デバイス既定値に委ねる）、初期化失敗を避ける。
-    const PREFERRED_BUFFER_FRAMES: u32 = 512;
-    let requested_buffer_size = match supported_config.buffer_size() {
-        cpal::SupportedBufferSize::Range { min, max } => {
-            cpal::BufferSize::Fixed(PREFERRED_BUFFER_FRAMES.clamp(*min, *max))
-        }
-        cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Default,
-    };
+    // 収まらない場合は範囲内へ丸め、範囲が不明なら要求せず（デバイス既定値に
+    // 委ねる）、初期化失敗を避ける。
+    let requested_buffer_size =
+        resolve_buffer_size(PREFERRED_BUFFER_FRAMES, supported_config.buffer_size());
 
     let mut config: cpal::StreamConfig = supported_config.into();
     config.buffer_size = requested_buffer_size;
@@ -210,13 +222,26 @@ fn build_stream() -> Result<(Arc<AudioEngine>, cpal::Stream), String> {
     let engine = Arc::new(AudioEngine::new(sample_rate));
     let engine_cb = engine.clone();
 
+    // コールバックが実際に受け取ったバッファ長（フレーム数）。0は未観測。
+    // 要求値が効いているか（特にWindowsの共有モードではOS周期に丸められうる）を
+    // 確かめるためのもの。コールバック内ではアトミックな保存だけを行い、
+    // ロックやI/O（ログ出力）は一切しない。出力は別スレッドで行う。
+    let observed_frames = Arc::new(AtomicUsize::new(0));
+    let observed_frames_cb = observed_frames.clone();
+
     let err_fn = |e| eprintln!("[drumclack] 音声出力エラー: {e}");
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => device
             .build_output_stream(
                 &config,
-                move |data: &mut [f32], _| fill_buffer(data, channels, &engine_cb),
+                move |data: &mut [f32], _| {
+                    // 初回のみ保存する（以降は読むだけで書かない）。
+                    if observed_frames_cb.load(Ordering::Relaxed) == 0 {
+                        observed_frames_cb.store(data.len() / channels.max(1), Ordering::Relaxed);
+                    }
+                    fill_buffer(data, channels, &engine_cb)
+                },
                 err_fn,
                 None,
             )
@@ -229,9 +254,25 @@ fn build_stream() -> Result<(Arc<AudioEngine>, cpal::Stream), String> {
     stream.play().map_err(|e| format!("音声出力の開始に失敗しました: {e}"))?;
 
     println!(
-        "[drumclack] audio initialized: sample_rate={sample_rate}Hz channels={channels} requested_buffer_frames={PREFERRED_BUFFER_FRAMES} actual_config_buffer_size={:?}",
+        "[drumclack] audio initialized: sample_rate={sample_rate}Hz channels={channels} preferred_buffer_frames={PREFERRED_BUFFER_FRAMES} requested_buffer_size={:?}",
         config.buffer_size
     );
+
+    // 実測フレーム数のログは、オーディオスレッドを塞がないよう別スレッドで
+    // コールバックの初回実行を待って1回だけ出力する。
+    std::thread::spawn(move || {
+        for _ in 0..40 {
+            let frames = observed_frames.load(Ordering::Relaxed);
+            if frames != 0 {
+                println!(
+                    "[drumclack] audio callback observed: buffer_frames={frames} (preferred={PREFERRED_BUFFER_FRAMES})"
+                );
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        println!("[drumclack] audio callback observed: 2秒以内にコールバックが呼ばれませんでした");
+    });
 
     Ok((engine, stream))
 }
@@ -243,6 +284,47 @@ fn fill_buffer(data: &mut [f32], channels: usize, engine: &AudioEngine) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn range(min: u32, max: u32) -> cpal::SupportedBufferSize {
+        cpal::SupportedBufferSize::Range { min, max }
+    }
+
+    #[test]
+    fn buffer_size_below_min_is_raised_to_min() {
+        assert!(matches!(
+            resolve_buffer_size(128, &range(256, 4096)),
+            cpal::BufferSize::Fixed(256)
+        ));
+    }
+
+    #[test]
+    fn buffer_size_above_max_is_lowered_to_max() {
+        assert!(matches!(
+            resolve_buffer_size(128, &range(16, 64)),
+            cpal::BufferSize::Fixed(64)
+        ));
+    }
+
+    #[test]
+    fn buffer_size_within_range_is_kept() {
+        assert!(matches!(
+            resolve_buffer_size(128, &range(16, 4096)),
+            cpal::BufferSize::Fixed(128)
+        ));
+    }
+
+    #[test]
+    fn buffer_size_unknown_falls_back_to_default() {
+        assert!(matches!(
+            resolve_buffer_size(128, &cpal::SupportedBufferSize::Unknown),
+            cpal::BufferSize::Default
+        ));
+    }
+
+    #[test]
+    fn buffer_size_inverted_range_does_not_panic() {
+        let _ = resolve_buffer_size(128, &range(4096, 16));
+    }
 
     // issue #6 で指摘された通り、「合算後が±1.0を超えない」ことだけを見る
     // 以前のアサーションは、まさにその clamp が音割れの原因（原因C）だったため
