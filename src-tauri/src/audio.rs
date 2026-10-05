@@ -4,7 +4,8 @@
 //! 発音の要求はキー入力スレッドから固定長の待ち行列へ積み、ミキシングは cpal の
 //! オーディオコールバック（別スレッド）が行う。両者の間にロックはない。
 
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -48,6 +49,12 @@ fn fade_samples_for(sample_rate: u32, fade_ms: f32) -> u32 {
     (sample_rate as f32 * fade_ms / 1000.0).round() as u32
 }
 
+/// 現在時刻（UNIX epoch ミリ秒）。0 は「未発音」の番兵値なので 1 以上にする。
+/// 音声コールバックから呼ぶため、確保もロックもしない時刻取得だけを使う。
+fn now_epoch_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0).max(1)
+}
+
 /// 起動時に合成する無料キット。いまはキックだけ（止め合いの組なし）。
 fn build_free_kit(sample_rate: u32) -> Kit {
     let mut kit = Kit::new();
@@ -65,6 +72,8 @@ pub struct AudioEngine {
     kit: Kit,
     requests: RequestQueue,
     active_voices: AtomicUsize,
+    /// 音声コールバックが最後に発音を受理した時刻（UNIX epoch ミリ秒）。0 は未発音。
+    last_accepted_play_ms: AtomicU64,
     /// 全体音量（`f32` のビット列）。
     master_volume_bits: AtomicU32,
     sample_rate: u32,
@@ -76,6 +85,7 @@ impl AudioEngine {
             kit,
             requests: RequestQueue::new(REQUEST_QUEUE_CAPACITY),
             active_voices: AtomicUsize::new(0),
+            last_accepted_play_ms: AtomicU64::new(0),
             master_volume_bits: AtomicU32::new(1.0_f32.to_bits()),
             sample_rate,
         }
@@ -109,6 +119,15 @@ impl AudioEngine {
     pub fn set_master_volume(&self, volume: f32) {
         if volume.is_finite() {
             self.master_volume_bits.store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// 実際に鳴り始めた最後の発音の時刻。16音の上限などで鳴らなかった要求は含まない。
+    /// 時刻は音声コールバックが要求を取り込んだ時点（打鍵から最大でバッファ1回分後）。
+    pub fn last_accepted_play_ms(&self) -> Option<u64> {
+        match self.last_accepted_play_ms.load(Ordering::Relaxed) {
+            0 => None,
+            ms => Some(ms),
         }
     }
 
@@ -152,7 +171,9 @@ impl Mixer {
     /// チャンネル数ごとに分割して、フレーム単位でモノラルの音を書き込む。
     fn fill_output(&mut self, data: &mut [f32], channels: usize) {
         while let Some(request) = self.engine.requests.pop() {
-            self.pool.start(&self.engine.kit, request, self.fade_samples);
+            if self.pool.start(&self.engine.kit, request, self.fade_samples) {
+                self.engine.last_accepted_play_ms.store(now_epoch_ms(), Ordering::Relaxed);
+            }
         }
         let master_volume = self.engine.master_volume();
 
@@ -553,6 +574,27 @@ mod tests {
         let elapsed = (MAX_VOICES + 1) * interval;
         rig.render(kick_len - elapsed + interval / 2);
         assert_eq!(rig.engine.active_voice_count(), MAX_VOICES - 1);
+    }
+
+    #[test]
+    fn last_play_time_is_updated_only_for_voices_that_actually_start() {
+        let mut rig = Rig::free_kit();
+        assert_eq!(rig.engine.last_accepted_play_ms(), None);
+
+        // 16音を鳴らす。受理されたので時刻が入る。
+        for _ in 0..MAX_VOICES {
+            rig.engine.play("kick", 0, 1.0);
+        }
+        rig.render(128);
+        let accepted = rig.engine.last_accepted_play_ms().expect("16音は鳴っている");
+        assert_eq!(rig.engine.active_voice_count(), MAX_VOICES);
+
+        // 17音目は積めるが鳴らない。直近の発音時刻は動かない。
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert!(rig.engine.play("kick", 0, 1.0));
+        rig.render(128);
+        assert_eq!(rig.engine.active_voice_count(), MAX_VOICES);
+        assert_eq!(rig.engine.last_accepted_play_ms(), Some(accepted), "鳴らなかった打鍵で更新された");
     }
 
     #[test]

@@ -43,19 +43,17 @@ fn handle_key_down(engine: Arc<AudioEngine>, state: Arc<AppState>) {
         Some(ms) => {
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(ms));
-                trigger(&engine, &state);
+                trigger(&engine);
             });
         }
-        None => trigger(&engine, &state),
+        None => trigger(&engine),
     }
 }
 
-fn trigger(engine: &AudioEngine, state: &AppState) {
-    // キットに無い名前・待ち行列あふれのとき play() は何もせず false を返す。
-    // その場合は直近発音時刻を更新しない。音の名前の割り当ては後続の issue で行う。
-    if engine.play("kick", 0, 1.0) {
-        state.record_play_now();
-    }
+fn trigger(engine: &AudioEngine) {
+    // 直近の発音時刻は、音声コールバックが実際に鳴らした時点でエンジン側が記録する
+    // （16音の上限で鳴らなかった打鍵は記録されない）。音の名前の割り当ては後続の issue で行う。
+    engine.play("kick", 0, 1.0);
 }
 
 /// macOS: `CGEventTap` への直接 FFI によるキー監視。
