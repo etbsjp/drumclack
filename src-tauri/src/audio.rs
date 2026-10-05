@@ -179,6 +179,10 @@ pub fn spawn_output_stream() -> Result<Arc<AudioEngine>, String> {
     rx.recv().map_err(|_| "音声出力スレッドの初期化応答を受信できませんでした。".to_string())?
 }
 
+/// 実測フレーム数の待機設定（50ms × 40回 = 最大2秒）。
+const OBSERVE_POLL_INTERVAL_MS: u64 = 50;
+const OBSERVE_MAX_POLLS: u32 = 40;
+
 /// 希望バッファ長（フレーム数）。低遅延のため小さめを希望する（issue #5）。
 const PREFERRED_BUFFER_FRAMES: u32 = 128;
 
@@ -231,28 +235,45 @@ fn build_stream() -> Result<(Arc<AudioEngine>, cpal::Stream), String> {
 
     let err_fn = |e| eprintln!("[drumclack] 音声出力エラー: {e}");
 
-    let stream = match sample_format {
-        cpal::SampleFormat::F32 => device
-            .build_output_stream(
-                &config,
-                move |data: &mut [f32], _| {
-                    // 初回のみ保存する（以降は読むだけで書かない）。
-                    if observed_frames_cb.load(Ordering::Relaxed) == 0 {
-                        observed_frames_cb.store(data.len() / channels.max(1), Ordering::Relaxed);
-                    }
-                    fill_buffer(data, channels, &engine_cb)
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("出力ストリームの構築に失敗しました: {e}"))?,
-        other => {
-            return Err(format!("未対応のサンプル形式です: {other:?}"));
+    if sample_format != cpal::SampleFormat::F32 {
+        return Err(format!("未対応のサンプル形式です: {sample_format:?}"));
+    }
+
+    // コールバックを持つストリームの構築。再試行で2回呼べるよう、毎回クローンを作る。
+    let build = |config: &cpal::StreamConfig| {
+        let engine_cb = engine_cb.clone();
+        let observed_frames_cb = observed_frames_cb.clone();
+        device.build_output_stream(
+            config,
+            move |data: &mut [f32], _| {
+                // 初回のみ保存する（以降は読むだけで書かない）。
+                if observed_frames_cb.load(Ordering::Relaxed) == 0 {
+                    observed_frames_cb.store(data.len() / channels.max(1), Ordering::Relaxed);
+                }
+                fill_buffer(data, channels, &engine_cb)
+            },
+            err_fn,
+            None,
+        )
+    };
+
+    // 固定サイズでの構築に失敗したら、デバイス既定のバッファサイズで1回だけ作り直す。
+    let stream = match build(&config) {
+        Ok(stream) => stream,
+        Err(e) if matches!(config.buffer_size, cpal::BufferSize::Fixed(_)) => {
+            eprintln!(
+                "[drumclack] バッファサイズ {:?} での出力ストリーム構築に失敗したため、既定サイズで再試行します: {e}",
+                config.buffer_size
+            );
+            config.buffer_size = cpal::BufferSize::Default;
+            build(&config).map_err(|e| format!("出力ストリームの構築に失敗しました: {e}"))?
         }
+        Err(e) => return Err(format!("出力ストリームの構築に失敗しました: {e}")),
     };
 
     stream.play().map_err(|e| format!("音声出力の開始に失敗しました: {e}"))?;
 
+    // requested_buffer_size は再試行後に最終的に使った値。
     println!(
         "[drumclack] audio initialized: sample_rate={sample_rate}Hz channels={channels} preferred_buffer_frames={PREFERRED_BUFFER_FRAMES} requested_buffer_size={:?}",
         config.buffer_size
@@ -261,17 +282,17 @@ fn build_stream() -> Result<(Arc<AudioEngine>, cpal::Stream), String> {
     // 実測フレーム数のログは、オーディオスレッドを塞がないよう別スレッドで
     // コールバックの初回実行を待って1回だけ出力する。
     std::thread::spawn(move || {
-        for _ in 0..40 {
+        for _ in 0..OBSERVE_MAX_POLLS {
             let frames = observed_frames.load(Ordering::Relaxed);
             if frames != 0 {
                 println!(
-                    "[drumclack] audio callback observed: buffer_frames={frames} (preferred={PREFERRED_BUFFER_FRAMES})"
+                    "[drumclack] audio callback observed (first callback): buffer_frames={frames} (preferred={PREFERRED_BUFFER_FRAMES})"
                 );
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(OBSERVE_POLL_INTERVAL_MS));
         }
-        println!("[drumclack] audio callback observed: 2秒以内にコールバックが呼ばれませんでした");
+        eprintln!("[drumclack] audio callback observed: 2秒以内にコールバックが呼ばれませんでした");
     });
 
     Ok((engine, stream))
@@ -323,7 +344,11 @@ mod tests {
 
     #[test]
     fn buffer_size_inverted_range_does_not_panic() {
-        let _ = resolve_buffer_size(128, &range(4096, 16));
+        // min > max でも panic せず、max(min) 後に min(max) で丸まり Fixed(16) になる。
+        assert!(matches!(
+            resolve_buffer_size(128, &range(4096, 16)),
+            cpal::BufferSize::Fixed(16)
+        ));
     }
 
     // issue #6 で指摘された通り、「合算後が±1.0を超えない」ことだけを見る
