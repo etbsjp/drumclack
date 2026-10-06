@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::audio::AudioEngine;
 use crate::key_tracker::{KeyEvent, KeyTracker};
@@ -46,16 +46,30 @@ pub fn spawn_listener(engine: Arc<AudioEngine>, state: Arc<AppState>) {
 /// 監視から届いたイベントを状態機械に通し、新しく押されたときだけ発音を試みる。
 ///
 /// キーの位置は、ここで `state.assignments`（割り当ての検索と、オン／オフ・無音の判定）に渡して
-/// 音の名前にし、使い切る。オフのときや無音のキーのときは、発音を要求しない。
+/// 音の名前にし、使い切る。オフのときや無音のキーのときは、発音を要求しない（強弱の間隔にも数えない）。
+/// 強弱の時刻（単調時計）は、打鍵を受け取ったこの時点で取る。
 fn dispatch(
     tracker: &mut KeyTracker,
     event: KeyEvent,
     engine: &Arc<AudioEngine>,
     state: &Arc<AppState>,
 ) {
+    dispatch_at(tracker, event, engine, state, Instant::now());
+}
+
+/// [`dispatch`] の本体。打鍵の時刻 `hit_at` を外から渡せる（テストで時刻を固定するため）。
+fn dispatch_at(
+    tracker: &mut KeyTracker,
+    event: KeyEvent,
+    engine: &Arc<AudioEngine>,
+    state: &Arc<AppState>,
+    hit_at: Instant,
+) {
     if let Some(position) = tracker.handle(event) {
         if let Some(sound_name) = state.assignments.sound_name_for_key(position) {
-            handle_key_down(engine.clone(), state.clone(), sound_name);
+            // 音量は、遅延テスト用の待ちより前に（打鍵の時点の時刻で）決める。
+            let volume = state.assignments.dynamics.next_volume(hit_at);
+            handle_key_down(engine.clone(), state.clone(), sound_name, volume);
         }
     }
 }
@@ -65,22 +79,22 @@ fn dispatch(
 /// `DRUMCLACK_TEST_DELAY_MS` が設定されていれば、その分だけ遅延させてから
 /// 発音する（測定用の陽性対照）。呼び出し元のイベントループ／コールバックの
 /// スレッドを長時間ブロックしないよう、遅延がある場合は別スレッドへ逃がす。
-fn handle_key_down(engine: Arc<AudioEngine>, state: Arc<AppState>, sound_name: &'static str) {
+fn handle_key_down(engine: Arc<AudioEngine>, state: Arc<AppState>, sound_name: &'static str, volume: f32) {
     match state.test_delay_ms {
         Some(ms) => {
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(ms));
-                trigger(&engine, sound_name);
+                trigger(&engine, sound_name, volume);
             });
         }
-        None => trigger(&engine, sound_name),
+        None => trigger(&engine, sound_name, volume),
     }
 }
 
-fn trigger(engine: &AudioEngine, sound_name: &str) {
+fn trigger(engine: &AudioEngine, sound_name: &str, volume: f32) {
     // 直近の発音時刻は、音声コールバックが実際に鳴らした時点でエンジン側が記録する
     // （16音の上限で鳴らなかった打鍵は記録されない）。
-    engine.play_varied(sound_name, 1.0);
+    engine.play_varied(sound_name, volume);
 }
 
 /// macOS: `CGEventTap` への直接 FFI によるキー監視。
@@ -497,7 +511,9 @@ mod dispatch_tests {
 
     use serde_json::json;
 
-    use super::dispatch;
+    use std::time::{Duration, Instant};
+
+    use super::{dispatch, dispatch_at};
     use crate::assignment;
     use crate::audio::AudioEngine;
     use crate::drums::build_free_kit;
@@ -671,5 +687,87 @@ mod dispatch_tests {
             requests += rig.drain_names().len();
         }
         assert_eq!(requests, 1);
+    }
+
+    /// 打鍵（押して離す）を時刻 `hit_at` で通し、積まれた発音の音量を返す。
+    fn tap_at(rig: &mut Rig, name: &str, hit_at: Instant) -> Vec<f32> {
+        let position = KeyPosition::from_code_name(name).expect("キー名");
+        dispatch_at(&mut rig.tracker, KeyEvent::Down { position, autorepeat: false }, &rig.engine, &rig.state, hit_at);
+        dispatch_at(&mut rig.tracker, KeyEvent::Up { position }, &rig.engine, &rig.state, hit_at);
+        rig.engine.drain_requests_for_test().into_iter().map(|request| request.volume).collect()
+    }
+
+    #[test]
+    fn silent_keys_in_between_do_not_change_the_interval_calculation() {
+        // 同じ時刻の列（A を 0ms・300ms・400ms に打つ）を、無音のキーを挟む／挟まないで通す。
+        let run = |with_silent_keys: bool| {
+            let mut rig = Rig::new(None);
+            rig.store.update(&json!({"dynamics": 1.0})).unwrap();
+            let start = Instant::now();
+            let mut volumes = Vec::new();
+            for t in [0u64, 300, 400] {
+                if with_silent_keys && t > 0 {
+                    // 直前の打鍵から 10ms 後に、無音のキー（Shift・矢印・Cmd）を打つ。
+                    for key in ["ShiftLeft", "ArrowUp", "MetaLeft"] {
+                        let silent = tap_at(&mut rig, key, start + Duration::from_millis(t - 10));
+                        assert!(silent.is_empty(), "{key} は鳴らないはず");
+                    }
+                }
+                volumes.extend(tap_at(&mut rig, "KeyA", start + Duration::from_millis(t)));
+            }
+            volumes
+        };
+        let without = run(false);
+        assert_eq!(without.len(), 3);
+        assert_eq!(without, run(true), "無音のキーを挟んだら音量が変わった");
+        // 前提: 間隔 100ms の打鍵は、間隔 300ms の打鍵より小さい（間隔が音量に効いている）。
+        assert!(without[2] < without[1], "{without:?}");
+    }
+
+    #[test]
+    fn dynamics_setting_changes_the_requested_volume_through_the_settings_command() {
+        let mut rig = Rig::new(None);
+        let start = Instant::now();
+        // 既定の幅（0.6）。連打（30ms）は、最初の1打より小さい。
+        let first = tap_at(&mut rig, "KeyA", start)[0];
+        let rapid = tap_at(&mut rig, "KeyA", start + Duration::from_millis(30))[0];
+        assert!(rapid < first * 0.8, "既定の幅で連打が小さくならない: {first} {rapid}");
+
+        // 幅 0 にすると、揺らぎも含めて常に同じ（1.0）。
+        rig.store.update(&json!({"dynamics": 0.0})).unwrap();
+        let volumes: Vec<f32> = [10u64, 20, 30, 500, 510]
+            .iter()
+            .flat_map(|t| tap_at(&mut rig, "KeyA", start + Duration::from_millis(1000 + t)))
+            .collect();
+        assert_eq!(volumes.len(), 5);
+        assert!(volumes.iter().all(|v| *v == 1.0), "{volumes:?}");
+    }
+
+    #[test]
+    fn volume_is_decided_when_the_key_is_hit_not_after_the_test_delay() {
+        // 遅延テスト用の経路（別スレッドで待ってから鳴らす）。
+        let engine = Arc::new(AudioEngine::new(build_free_kit(SR), SR));
+        let mut state = AppState::new(AudioInitStatus::Ok { sample_rate: SR }, Some(engine.clone()));
+        state.test_delay_ms = Some(100);
+        let state = Arc::new(state);
+        let store = SettingsStore::open_with(None, Some(engine.clone()), state.assignments.clone());
+        store.update(&json!({"dynamics": 1.0})).unwrap();
+        let mut tracker = KeyTracker::new();
+
+        let start = Instant::now();
+        // 実際には続けて呼ぶが、打鍵の時刻は 500ms 離れていたことにする。
+        for (key, offset_ms) in [("KeyA", 0u64), ("KeyB", 500)] {
+            let position = KeyPosition::from_code_name(key).unwrap();
+            let hit_at = start + Duration::from_millis(offset_ms);
+            dispatch_at(&mut tracker, KeyEvent::Down { position, autorepeat: false }, &engine, &state, hit_at);
+        }
+
+        // 待っている間は鳴らない。鳴ったときの音量は、待った後の時計ではなく打鍵の時刻（500ms 差＝最大側）で決まっている。
+        // 待った後の時計で測ると、2打目は直前の打鍵からほぼ 0ms になり、最小側（0.3 前後）になってしまう。
+        assert!(engine.drain_requests_for_test().is_empty(), "遅延の間に鳴った");
+        std::thread::sleep(Duration::from_millis(500));
+        let volumes: Vec<f32> = engine.drain_requests_for_test().into_iter().map(|r| r.volume).collect();
+        assert_eq!(volumes.len(), 2);
+        assert!(volumes.iter().all(|v| *v > 0.75), "打鍵の時刻でなく待った後の時計で測っている: {volumes:?}");
     }
 }

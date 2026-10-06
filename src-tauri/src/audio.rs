@@ -754,6 +754,51 @@ mod tests {
         assert!(ratio < 0.01, "飽和域に留まるサンプルが多い: {:.1}%", ratio * 100.0);
     }
 
+    // 強弱の幅を最大にして 30ms 間隔で連打しても、頭打ち（tanh の飽和域）に張り付く割合が、
+    // 強弱なし（常に音量 1.0）の実測より悪くならない。「超えない」だけでなく、連打の音量が実際に
+    // 下がり（最初の1打だけが大きい）、混ざった波形のピークも実際に低いことまで確かめる。
+    #[test]
+    fn full_width_dynamics_on_30ms_hits_does_not_stick_to_saturation_more_than_without() {
+        use crate::dynamics::Dynamics;
+        use std::time::{Duration, Instant};
+
+        let kit = build_free_kit(SR);
+        let interval = SR as usize * 30 / 1000;
+        let total = SR as usize * 9 / 10;
+        // 16音を 30ms 間隔で鳴らし、(飽和域のサンプル割合, 混ぜた値のピーク, 実際に使った音量の列) を返す。
+        let run = |dynamics: Option<&Dynamics>| {
+            let mut pool = VoicePool::new();
+            let start = Instant::now();
+            let (mut saturated, mut peak, mut volumes) = (0usize, 0.0_f32, Vec::new());
+            for i in 0..total {
+                if i % interval == 0 && i / interval < MAX_VOICES {
+                    let hit = (i / interval) as u64;
+                    let volume = dynamics
+                        .map_or(1.0, |d| d.next_volume(start + Duration::from_millis(30 * hit)));
+                    volumes.push(volume);
+                    pool.start(&kit, PlayRequest { sound: 0, variant: 0, volume }, 240);
+                }
+                let mixed = (pool.mix_next_sample(&kit) * VOICE_GAIN).abs();
+                peak = peak.max(mixed);
+                if mixed > 2.0 {
+                    saturated += 1;
+                }
+            }
+            (saturated as f32 / total as f32, peak, volumes)
+        };
+
+        let (base_ratio, base_peak, _) = run(None);
+        let dynamics = Dynamics::with_seed(1.0, 3);
+        let (dyn_ratio, dyn_peak, volumes) = run(Some(&dynamics));
+
+        assert!(dyn_ratio <= base_ratio, "強弱で張り付きが悪化: {dyn_ratio} > {base_ratio}");
+        assert!(dyn_ratio < 0.01, "飽和域に留まるサンプルが多い: {:.1}%", dyn_ratio * 100.0);
+        // 最初の1打は最大側、30ms の連打は最小側（最大の約 -10dB = 0.32 前後、揺らぎ込みで 0.4 未満）。
+        assert!(volumes[0] > 0.75, "最初の1打が大きくない: {volumes:?}");
+        assert!(volumes[1..].iter().all(|v| *v < 0.4), "連打の音量が下がっていない: {volumes:?}");
+        assert!(dyn_peak < base_peak * 0.6, "混ざった波形のピークが実際に下がっていない: {dyn_peak} vs {base_peak}");
+    }
+
     // 「同時発音数で割る」方式は重なった瞬間に既存の音が跳ねて「プツッ」と鳴った（PR #7）。
     // 100ms 間隔で2音・3音を重ねても、単発の波形が元々持つ隣接差を超えないこと。
     #[test]

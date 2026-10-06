@@ -8,6 +8,7 @@
 mod assignment;
 mod audio;
 mod drums;
+mod dynamics;
 mod keyboard;
 mod key_position;
 mod key_tables;
