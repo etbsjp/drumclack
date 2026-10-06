@@ -8,6 +8,9 @@
   </head>
   <body>
     <!-- 文言は i18n/ja.json・en.json にだけ書く。ここには文言を直書きしない。 -->
+    <!-- 画面の起動に失敗したときだけ boot.js が出す（対応表に頼れないため、文言は英日の直書き）。 -->
+    <p class="startup-error" data-testid="startup-error" role="alert" hidden></p>
+
     <main class="app" data-testid="app">
       <header class="app-header">
         <h1 data-i18n="app.title"></h1>
@@ -45,6 +48,20 @@
       </section>
 
       <p class="test-mode" data-testid="test-mode" hidden></p>
+
+      <!-- 設定の保存・読み込みの通知。どの区画を開いていても見える場所に置く。 -->
+      <div class="notices" data-testid="notices">
+        <div class="notice notice-warn notice-with-close" data-testid="settings-recovered" role="status" hidden>
+          <p class="notice-text" data-testid="settings-recovered-text"></p>
+          <button
+            type="button"
+            class="notice-close"
+            data-testid="settings-recovered-dismiss"
+            data-i18n="common.close"
+          ></button>
+        </div>
+        <p class="notice notice-error" data-testid="settings-error" role="alert" hidden></p>
+      </div>
 
       <!-- 3つの区画。割り当てと演奏の中身は後の issue（#18・#19）。 -->
       <div class="tabs" role="tablist" data-i18n-attr="aria-label:nav.label">
@@ -89,9 +106,6 @@
         aria-labelledby="tab-settings"
         data-testid="panel-settings"
       >
-        <p class="notice notice-warn" data-testid="settings-recovered" role="status" hidden></p>
-        <p class="notice notice-error" data-testid="settings-error" role="alert" hidden></p>
-
         <form class="settings-form" data-testid="settings-form">
           <fieldset class="settings-group">
             <legend data-i18n="settings.group.sound"></legend>
@@ -121,7 +135,6 @@
                   />
                   <output class="slider-value" for="setting-volume" data-testid="setting-volume-value"></output>
                 </div>
-                <p class="field-hint" data-i18n="settings.volume.hint"></p>
               </div>
             </div>
 
@@ -162,7 +175,7 @@
               <label class="field-label" for="setting-layout" data-i18n="settings.layout"></label>
               <div class="field-control">
                 <select id="setting-layout" data-testid="setting-layout">
-                  <option value="auto" data-i18n="settings.layout.auto"></option>
+                  <option value="auto"></option>
                   <option value="jis" data-i18n="settings.layout.jis"></option>
                   <option value="us" data-i18n="settings.layout.us"></option>
                 </select>
@@ -196,6 +209,7 @@
       </section>
     </main>
 
+    <script src="./boot.js"></script>
     <script src="./bridge.js"></script>
     <script src="./i18n.js"></script>
     <script src="./main.js"></script>

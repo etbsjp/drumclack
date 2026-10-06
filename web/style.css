@@ -77,7 +77,6 @@ body:where(:not([data-ready])) .app {
 
 .app {
   padding: 20px 24px 24px;
-  max-width: 880px;
 }
 
 h1 {
@@ -161,11 +160,28 @@ h1 {
   margin-top: 8px;
 }
 
+/* 開閉の目印は自分で描く（display を変えると、ブラウザ標準の三角が消えるため） */
 .status-details summary {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 0; /* 押せる範囲を広げる */
   cursor: pointer;
   color: var(--muted);
   font-size: 12px;
+  list-style: none;
+}
+
+.status-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.status-details summary::before {
+  content: "\25B8"; /* ▸ */
+}
+
+.status-details[open] summary::before {
+  content: "\25BE"; /* ▾ */
 }
 
 .status-detail-list {
@@ -244,8 +260,13 @@ h1 {
    設定の区画
    ========================================================================== */
 
+.notices {
+  display: flex;
+  flex-direction: column;
+}
+
 .notice {
-  margin: 0 0 16px;
+  margin: 12px 0 0;
   padding: 10px 14px;
   border: 1px solid var(--border);
   border-left-width: 6px;
@@ -264,6 +285,47 @@ h1 {
 
 .notice[hidden] {
   display: none;
+}
+
+.notice-with-close {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.notice-text {
+  flex: 1;
+  margin: 0;
+}
+
+.notice-close {
+  flex: none;
+  padding: 4px 12px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* 画面の起動に失敗したときの表示（boot.js） */
+.startup-error {
+  margin: 20px 24px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-left: 6px solid var(--error-fg);
+  border-radius: 6px;
+  color: var(--error-fg);
+  font-weight: 600;
+}
+
+.startup-error[hidden] {
+  display: none;
+}
+
+.startup-error-line {
+  display: block;
 }
 
 .settings-form {

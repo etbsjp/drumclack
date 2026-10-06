@@ -303,7 +303,7 @@ test.describe("設定の区画: 言語", () => {
 
     await expect(id(page, "status-issue-audio")).toContainText(en["status.audio.failed"]);
     await expect(id(page, "status-issue-audio")).toContainText(en["status.audio.action"]);
-    await expect(id(page, "settings-recovered")).toHaveText(en["settings.recovered"]);
+    await expect(id(page, "settings-recovered-text")).toHaveText(en["settings.recovered"]);
   });
 
   test("auto: OS の言語が日本語なら日本語・JIS、それ以外は英語・US。選ぶまで何も保存しない", async ({ browser }) => {
@@ -372,8 +372,8 @@ test.describe("設定の区画: 失敗の表示", () => {
   test("壊れた設定ファイルを退避して既定で起動したことを、1行で出す", async ({ page }) => {
     await openApp(page, { recovered: true });
 
-    await expect(id(page, "settings-recovered")).toHaveText(ja["settings.recovered"]);
-    await expect(id(page, "settings-recovered")).toContainText("settings.broken.json");
+    await expect(id(page, "settings-recovered-text")).toHaveText(ja["settings.recovered"]);
+    await expect(id(page, "settings-recovered-text")).toContainText("settings.broken.json");
   });
 
   test("設定を取得できないときは、操作部品を止めて次の操作を出す", async ({ page }) => {
@@ -383,6 +383,140 @@ test.describe("設定の区画: 失敗の表示", () => {
     await expect(id(page, "setting-volume")).toBeDisabled();
     await expect(id(page, "setting-language")).toBeDisabled();
     expect(await updateCalls(page)).toEqual([]);
+  });
+});
+
+// ============================================================================
+// レビュー指摘への対応（帯の詳細・通知の位置・幅・起動失敗など）
+// ============================================================================
+
+test.describe("レビュー指摘への対応", () => {
+  test("「詳細」には開閉の目印（▸／▾）があり、押せる範囲が文字より広い", async ({ page }) => {
+    await openApp(page);
+    const summary = id(page, "status-details").locator("summary");
+    const marker = () => summary.evaluate((el) => getComputedStyle(el, "::before").content);
+
+    expect(await marker()).toContain("\u25B8");
+    await summary.click();
+    expect(await marker()).toContain("\u25BE");
+
+    const padding = await summary.evaluate((el) => parseFloat(getComputedStyle(el).paddingTop));
+    expect(padding).toBeGreaterThanOrEqual(4);
+  });
+
+  test("内部のエラー文字列は「エラー内容:」（英語は Error:）と書き、「詳細」と紛れない", async ({ page }) => {
+    await openApp(page, { status: STATUS_AUDIO_FAILED });
+    const detail = id(page, "status-issue-audio").locator(".detail-text");
+    await expect(detail).toHaveText("エラー内容: no output device (test)");
+
+    await openApp(page, { status: STATUS_AUDIO_FAILED, settings: { ...DEFAULT_SETTINGS, language: "en" } });
+    await expect(detail).toHaveText("Error: no output device (test)");
+  });
+
+  test("画面の幅を制限しない（広い窓では .app が窓いっぱいに広がる）", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await openApp(page);
+    const width = await page.locator(".app").evaluate((el) => el.getBoundingClientRect().width);
+    expect(width).toBeGreaterThan(1500);
+    // 設定のフォームは読みやすい幅に収まる。
+    const form = await id(page, "settings-form").evaluate((el) => el.getBoundingClientRect().width);
+    expect(form).toBeLessThanOrEqual(640);
+  });
+
+  test("保存失敗と「既定で起動した」の通知は、どの区画を開いていても帯の下・タブの上に見える", async ({ page }) => {
+    await openApp(page, { saveFailed: true, recovered: true });
+
+    for (const tab of ["assign", "play", "settings"]) {
+      await id(page, `tab-${tab}`).click();
+      await expect(id(page, "settings-error")).toBeVisible();
+      await expect(id(page, "settings-recovered")).toBeVisible();
+    }
+
+    // 設定の区画の中には置かない。位置は帯より下、タブより上。
+    await expect(id(page, "panel-settings").locator('[data-testid="settings-error"]')).toHaveCount(0);
+    await expect(id(page, "panel-settings").locator('[data-testid="settings-recovered"]')).toHaveCount(0);
+    const y = (testId) => id(page, testId).evaluate((el) => el.getBoundingClientRect().top);
+    expect(await y("settings-error")).toBeGreaterThan(await y("status-band"));
+    expect(await y("settings-error")).toBeLessThan(await y("tab-settings"));
+    expect(await y("settings-recovered")).toBeLessThan(await y("tab-settings"));
+  });
+
+  test("保存失敗の文は、事実と操作の2文だけ", async ({ page }) => {
+    await openApp(page, { saveFailed: true });
+    const text = await id(page, "settings-error").innerText();
+    expect(text.split("。").filter(Boolean)).toHaveLength(2);
+    expect(text).toContain("書き込めるか確認してください");
+  });
+
+  test("「既定の設定で起動しました」の行は、閉じるボタンで消せる", async ({ page }) => {
+    await openApp(page, { recovered: true });
+    await expect(id(page, "settings-recovered")).toBeVisible();
+
+    await id(page, "settings-recovered-dismiss").click();
+    await expect(id(page, "settings-recovered")).toBeHidden();
+
+    // 設定を変えても、閉じた行は戻らない。
+    await id(page, "setting-volume").fill("30");
+    await expect.poll(() => updateCalls(page)).toHaveLength(1);
+    await expect(id(page, "settings-recovered")).toBeHidden();
+  });
+
+  test("配列の「自動」の選択肢に、今どちらで描くかを出す", async ({ browser }) => {
+    for (const [locale, shown] of [
+      ["ja-JP", "自動（今は JIS）"],
+      ["en-US", "Auto (currently US)"],
+    ]) {
+      const context = await browser.newContext({ locale, baseURL: "http://127.0.0.1:4173" });
+      const page = await context.newPage();
+      await openApp(page);
+      await expect(id(page, "setting-layout").locator('option[value="auto"]'), locale).toHaveText(shown);
+      await context.close();
+    }
+  });
+
+  test("音量・強弱のスライダーは、読み上げ用の値（aria-valuetext）が「80%」の形で追従する", async ({ page }) => {
+    await openApp(page);
+    await expect(id(page, "setting-volume")).toHaveAttribute("aria-valuetext", "80%");
+
+    await id(page, "setting-volume").fill("35");
+    await expect(id(page, "setting-volume")).toHaveAttribute("aria-valuetext", "35%");
+    await expect(id(page, "setting-dynamics")).toHaveAttribute("aria-valuetext", "60%");
+  });
+
+  test("起動中に例外が出たら、真っ白にせず次の操作を出す", async ({ page }) => {
+    page.allowPageErrors = true;
+    await openApp(page, { malformedSettings: true, noWait: true });
+
+    // タイムアウト（5秒）を待たずに、例外を拾ってすぐ出ること。
+    await expect(id(page, "startup-error")).toBeVisible({ timeout: 2000 });
+    await expect(id(page, "startup-error")).toContainText("Restart drumclack");
+    await expect(id(page, "startup-error")).toContainText("再起動してください");
+  });
+
+  test("起動が終わらないまま一定時間たったら、同じ表示を出す", async ({ page }) => {
+    await page.clock.install();
+    await openApp(page, { hangSettings: true });
+    await expect(id(page, "startup-error")).toBeHidden();
+
+    await page.clock.fastForward(6000);
+    await expect(id(page, "startup-error")).toBeVisible();
+  });
+
+  test("起動に成功したときは、起動失敗の表示を出さない", async ({ page }) => {
+    await openApp(page);
+    await expect(id(page, "startup-error")).toBeHidden();
+  });
+
+  test("data-i18n-attr は許可した属性（aria-label など）だけを差し替え、onclick などは受け付けない", async ({ page }) => {
+    await openApp(page);
+    const result = await page.evaluate(() => {
+      const el = document.createElement("div");
+      el.dataset.i18nAttr = "onclick:nav.play;aria-label:nav.play;onfocus:nav.play";
+      document.body.appendChild(el);
+      window.drumclackI18n.apply(document.body);
+      return { onclick: el.getAttribute("onclick"), onfocus: el.getAttribute("onfocus"), label: el.getAttribute("aria-label") };
+    });
+    expect(result).toEqual({ onclick: null, onfocus: null, label: ja["nav.play"] });
   });
 });
 

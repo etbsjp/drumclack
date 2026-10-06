@@ -7,6 +7,8 @@
 
 (function () {
   const SUPPORTED = ["ja", "en"];
+  // `data-i18n-attr` で差し替えてよい属性。onclick など、動作を持つ属性は受け付けない。
+  const TRANSLATABLE_ATTRIBUTES = ["aria-label", "title", "placeholder", "alt"];
   const dictionaries = {};
   let current = "ja";
 
@@ -44,7 +46,7 @@
     for (const el of root.querySelectorAll("[data-i18n-attr]")) {
       for (const pair of el.dataset.i18nAttr.split(";")) {
         const [attr, key] = pair.split(":");
-        if (attr && key) {
+        if (attr && key && TRANSLATABLE_ATTRIBUTES.includes(attr.trim())) {
           el.setAttribute(attr.trim(), t(key.trim()));
         }
       }

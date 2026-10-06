@@ -20,6 +20,8 @@ const els = {
   detailVoices: $("detail-voices"),
   testMode: $("test-mode"),
   recovered: $("settings-recovered"),
+  recoveredText: $("settings-recovered-text"),
+  recoveredDismiss: $("settings-recovered-dismiss"),
   settingsError: $("settings-error"),
   settingsForm: $("settings-form"),
   enabled: $("setting-enabled"),
@@ -34,6 +36,7 @@ const els = {
 // 今の画面の状態。描き直しのたびに Rust へ聞き直さなくていいように持つ。
 const view = {
   settings: null, // 直近に Rust が返した設定のスナップショット
+  recoveredDismissed: false, // 「既定の設定で起動しました」の行を閉じたか（この起動中だけ）
   settingsError: null, // "load" | "update" | null（保存の失敗は snapshot.save_failed から出す）
   status: null, // 直近の状態のスナップショット
   statusError: null, // 状態の取得に失敗したときのエラー文字列
@@ -245,9 +248,9 @@ function resolveLayout(setting) {
 function renderNotices() {
   const snapshot = view.settings;
 
-  els.recovered.hidden = !(snapshot && snapshot.recovered_from_broken);
+  els.recovered.hidden = !(snapshot && snapshot.recovered_from_broken) || view.recoveredDismissed;
   if (!els.recovered.hidden) {
-    els.recovered.textContent = t("settings.recovered");
+    els.recoveredText.textContent = t("settings.recovered");
   }
 
   let errorKey = null;
@@ -262,8 +265,19 @@ function renderNotices() {
   }
 }
 
+function setSliderValue(slider, output, value) {
+  slider.value = String(value);
+  output.textContent = `${slider.value}%`;
+  slider.setAttribute("aria-valuetext", `${slider.value}%`);
+}
+
 function renderControls() {
   const snapshot = view.settings;
+
+  // 配列の「自動」は、今どちらで描くかを添える（「自動」だけでは、何が選ばれているか分からない）。
+  const autoOption = els.layout.querySelector('option[value="auto"]');
+  autoOption.textContent = t("settings.layout.auto", { layout: resolveLayout("auto").toUpperCase() });
+
   for (const fieldset of els.settingsForm.querySelectorAll("fieldset")) {
     fieldset.disabled = snapshot == null;
   }
@@ -273,10 +287,8 @@ function renderControls() {
 
   const settings = snapshot.settings;
   els.enabled.checked = settings.enabled;
-  els.volume.value = String(percent(settings.volume));
-  els.volumeValue.textContent = `${els.volume.value}%`;
-  els.dynamics.value = String(percent(settings.dynamics));
-  els.dynamicsValue.textContent = `${els.dynamics.value}%`;
+  setSliderValue(els.volume, els.volumeValue, percent(settings.volume));
+  setSliderValue(els.dynamics, els.dynamicsValue, percent(settings.dynamics));
   els.language.value = settings.language;
   els.layout.value = settings.keyboard_layout;
   document.documentElement.dataset.keyboardLayout = resolveLayout(settings.keyboard_layout);
@@ -324,6 +336,11 @@ function bindSettings() {
   // Enter での送信（ページの再読み込み）は使わない。変更は操作のたびに即時に保存する。
   els.settingsForm.addEventListener("submit", (event) => event.preventDefault());
 
+  els.recoveredDismiss.addEventListener("click", () => {
+    view.recoveredDismissed = true;
+    renderNotices();
+  });
+
   els.enabled.addEventListener("change", () => sendUpdate({ enabled: els.enabled.checked }));
 
   // スライダーは、動かしている間は表示だけ更新し、手を離したとき（change）に1回だけ保存する。
@@ -332,7 +349,7 @@ function bindSettings() {
     [els.dynamics, els.dynamicsValue, "dynamics"],
   ]) {
     slider.addEventListener("input", () => {
-      output.textContent = `${slider.value}%`;
+      setSliderValue(slider, output, slider.value);
     });
     slider.addEventListener("change", () => sendUpdate({ [key]: Number(slider.value) / 100 }));
   }

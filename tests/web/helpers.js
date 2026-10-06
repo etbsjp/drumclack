@@ -53,6 +53,9 @@ const STATUS_AUDIO_FAILED = {
  *  - status: get_status が返す状態 / statusError: 状態の取得を失敗させる
  *  - recovered / saveFailed: 設定のスナップショットの印
  *  - failSettings / failUpdate: get_settings / update_settings を失敗させる
+ *  - malformedSettings: get_settings が（設定を含まない）壊れた返事を返す
+ *  - hangSettings: get_settings が返事をしない
+ *  - noWait: 画面が起動し終わる（data-ready）のを待たずに返す
  */
 async function openApp(page, options = {}) {
   const config = {
@@ -63,6 +66,8 @@ async function openApp(page, options = {}) {
     saveFailed: false,
     failSettings: false,
     failUpdate: false,
+    malformedSettings: false,
+    hangSettings: false,
     ...options,
   };
 
@@ -86,6 +91,8 @@ async function openApp(page, options = {}) {
           }
           if (cmd === "get_settings") {
             if (fake.cfg.failSettings) throw new Error("settings unavailable (test)");
+            if (fake.cfg.hangSettings) return new Promise(() => {});
+            if (fake.cfg.malformedSettings) return {};
             return snapshot();
           }
           if (cmd === "update_settings") {
@@ -102,7 +109,9 @@ async function openApp(page, options = {}) {
   }, config);
 
   await page.goto("/index.html");
-  await page.locator('body[data-ready="true"]').waitFor();
+  if (!config.hangSettings && !config.noWait) {
+    await page.locator('body[data-ready="true"]').waitFor();
+  }
 }
 
 /** 画面から出た `update_settings` の呼び出し（命令名と引数）。 */
@@ -133,7 +142,11 @@ function readWeb(relativePath) {
 const test = base.test.extend({
   page: async ({ page }, use) => {
     const problems = [];
-    page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
+    // 起動の失敗を意図して起こすテストだけが、例外を許可する（page.allowPageErrors = true）。
+    page.allowPageErrors = false;
+    page.on("pageerror", (error) => {
+      if (!page.allowPageErrors) problems.push(`pageerror: ${error.message}`);
+    });
     page.on("console", (message) => {
       const text = message.text();
       if (message.type() === "error" && /Content Security Policy|Refused to/i.test(text)) {
