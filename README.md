@@ -84,6 +84,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - 両 OS のキーの値が Web 標準の `code` 名へ直ること（テンキー・JIS 固有キー・左右の修飾キーを含む。`key_tables.rs`）
 - 押しっぱなしを無視すること（押下→リピート10回→離す→押下で、押されたと扱うのがちょうど2回）、
   監視が一時停止された後に押下中だったキーがもう一度鳴らせること（`key_tracker.rs`）
+- 設定ファイルの読み書き（書いて読み直すと同じ・壊れたら退避・書き込み途中の失敗で元が無傷・知らない項目の無視・範囲外の丸め。
+  `settings.rs`, `settings_store.rs`。設定 JSON の見本は `tests/fixtures/settings.sample.json`）
 
 ## 測定用の環境変数
 
@@ -175,6 +177,19 @@ macOS 10.15+ で公開されている API）を使っています。これはプ
 
 状態の正常・異常は色だけでなく必ずテキストでも表現し、コントラスト比は WCAG AA
 （通常テキストで 4.5:1 以上）を満たすよう配色しています（`web/style.css`）。
+
+### 設定ファイル（`src-tauri/src/settings.rs`, `src-tauri/src/settings_store.rs`）
+
+設定は JSON 1ファイルで、読み書きは Rust 側が行います（画面から呼べるのは `get_settings` と `update_settings` だけ）。
+
+- macOS: `~/Library/Application Support/jp.etbs.drumclack/settings.json`
+- Windows: `%APPDATA%\jp.etbs.drumclack\settings.json`
+
+入るのは `version` `kit` `enabled` `volume`（0〜1）`dynamics`（0〜1）`language` `keyboard_layout`
+`first_sound_done` と、タイピング用（`typing`）・演奏用（`play`）それぞれの割り当ての上書き（`groups` `keys`）だけです。
+押されたキーの履歴は入りません。書き込みは別名のファイルへ書いてから置き換えます。
+読めないファイルは `settings.broken.json` へ退避して既定で起動します。知らない項目・音の名前・キーの名前は無視し、
+範囲外の数値は 0〜1 に丸めます。
 
 ### ウィンドウを閉じたとき
 

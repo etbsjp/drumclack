@@ -13,6 +13,8 @@ mod key_tables;
 mod key_tracker;
 mod kick;
 mod permission;
+mod settings;
+mod settings_store;
 mod state;
 mod voices;
 
@@ -20,13 +22,30 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
+use settings_store::{SettingsSnapshot, SettingsStore};
 use state::{AppState, AudioInitStatus, StatusSnapshot};
 
-/// 画面が定期ポーリングする、唯一の Tauri コマンド。
+/// 画面が定期ポーリングする、状態表示用の Tauri コマンド。
 /// 副作用は持たず、現在の状態を読み取って返すだけ。
 #[tauri::command]
 fn get_status(app_state: tauri::State<'_, Arc<AppState>>) -> StatusSnapshot {
     state::build_snapshot(&app_state)
+}
+
+/// 現在の設定を返す（画面用の命令その1。権限は `capabilities/default.json`）。
+#[tauri::command]
+fn get_settings(store: tauri::State<'_, Arc<SettingsStore>>) -> SettingsSnapshot {
+    store.get()
+}
+
+/// 設定を更新する（画面用の命令その2）。範囲外の値は丸め、即時に保存し、音量を鳴らす側へ反映する。
+/// 整えたあとの設定を返す。
+#[tauri::command]
+fn update_settings(
+    store: tauri::State<'_, Arc<SettingsStore>>,
+    settings: serde_json::Value,
+) -> Result<SettingsSnapshot, String> {
+    store.update(&settings)
 }
 
 fn main() {
@@ -54,10 +73,15 @@ fn main() {
                 keyboard::spawn_listener(engine, app_state.clone());
             }
 
+            // 設定は OS 標準の設定フォルダ（jp.etbs.drumclack）から読む。フォルダが分からないときは
+            // 既定で動き、保存だけ行わない。音量は読み込み時に鳴らす側へ反映される。
+            let config_dir = app.path().app_config_dir().ok();
+            app.manage(Arc::new(SettingsStore::open(config_dir, app_state.audio_engine.clone())));
+
             app.manage(app_state);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status])
+        .invoke_handler(tauri::generate_handler![get_status, get_settings, update_settings])
         .on_window_event(|window, event| {
             // 「閉じる」操作はトレイ格納ではなく、プロセスごと終了する方針。
             if let tauri::WindowEvent::CloseRequested { .. } = event {

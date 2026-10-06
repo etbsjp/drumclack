@@ -14,6 +14,13 @@ macro_rules! key_positions {
             $($name),*
         }
 
+        /// 設定ファイルに書かれた名前が、知っているキーの名前か。文字列から真偽を返すだけで、
+        /// 位置から文字列へ直す経路ではない。
+        pub fn is_known_code_name(name: &str) -> bool {
+            const NAMES: &[&str] = &[$(stringify!($name)),*];
+            NAMES.contains(&name)
+        }
+
         // テスト専用。製品ビルドには「位置→文字列」の経路を作らない。
         #[cfg(test)]
         impl KeyPosition {
