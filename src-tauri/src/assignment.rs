@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::audio::AudioEngine;
+use crate::dynamics::Dynamics;
 use crate::key_position::KeyPosition;
 use crate::settings::{Assignments, KeyGroup, Settings, Sound};
 
@@ -176,6 +177,8 @@ impl Tables {
 pub struct LiveAssignments {
     enabled: AtomicBool,
     tables: RwLock<Arc<Tables>>,
+    /// 強弱（打鍵の間隔で音量を決める）。幅は設定の `dynamics` で、`apply` が差し替える。
+    pub dynamics: Dynamics,
 }
 
 impl LiveAssignments {
@@ -185,6 +188,7 @@ impl LiveAssignments {
         Self {
             enabled: AtomicBool::new(settings.enabled),
             tables: RwLock::new(Arc::new(Tables::build(&settings))),
+            dynamics: Dynamics::new(settings.dynamics),
         }
     }
 
@@ -193,6 +197,7 @@ impl LiveAssignments {
         let tables = Arc::new(Tables::build(settings));
         *self.tables.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = tables;
         self.enabled.store(settings.enabled, Ordering::Relaxed);
+        self.dynamics.set_width(settings.dynamics);
     }
 
     /// 今使う割り当ての組。演奏用への切り替え条件（演奏の画面が最前面）は後の issue。

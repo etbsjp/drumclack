@@ -220,10 +220,10 @@ impl DrumSpec {
 }
 
 /// 乱数（xorshift32）。種が同じなら同じ列になる。
-struct Rng(u32);
+pub struct Rng(u32);
 
 impl Rng {
-    fn new(seed: u32) -> Self {
+    pub fn new(seed: u32) -> Self {
         // 種から1段混ぜて、隣り合う種でも列が似ないようにする。0 は使えない。
         let mut z = seed.wrapping_add(0x9E37_79B9);
         z = (z ^ (z >> 16)).wrapping_mul(0x85EB_CA6B);
@@ -242,7 +242,7 @@ impl Rng {
     }
 
     /// -1.0 以上 1.0 未満。
-    fn next_signed(&mut self) -> f32 {
+    pub fn next_signed(&mut self) -> f32 {
         (self.next_u32() >> 8) as f32 / (1u32 << 23) as f32 - 1.0
     }
 }
