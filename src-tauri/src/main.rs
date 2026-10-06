@@ -127,8 +127,9 @@ fn main() {
                 ),
             );
             // 初めて音が鳴ったら、first_sound_done を真にして1回だけ保存する。
+            // 保存に失敗したら、次の周期でもう一度試す（成否は設定のスナップショットの save_failed）。
             let first_sound = FirstSoundGate::new(first_sound_done, move || {
-                store.mark_first_sound_done();
+                !store.mark_first_sound_done().save_failed
             });
             tray::spawn_watcher(app.handle().clone(), first_sound);
             Ok(())

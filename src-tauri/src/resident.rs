@@ -11,6 +11,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::settings::Language;
+use crate::state::AppState;
 
 // ============================================================================
 // アイコンの状態
@@ -55,11 +56,12 @@ const ICON_RING_INNER_RADIUS: f32 = 8.0;
 /// Windows のトレイで使う色（RGB）。明るい背景でも暗い背景でも見える中間の色にしてある。
 const ICON_COLOR_ON: [u8; 3] = [46, 158, 91];
 const ICON_COLOR_OFF: [u8; 3] = [128, 128, 128];
-const ICON_COLOR_PROBLEM: [u8; 3] = [230, 126, 34];
+const ICON_COLOR_PROBLEM: [u8; 3] = [200, 95, 10];
 
 /// 「問題あり」の円から抜く「！」の位置（ピクセル。x の範囲, y の範囲）。
-const BANG_BAR: ((f32, f32), (f32, f32)) = ((14.0, 18.0), (8.0, 18.0));
-const BANG_DOT: ((f32, f32), (f32, f32)) = ((14.0, 18.0), (21.0, 25.0));
+/// 幅6pxの太さにして、小さい表示でもオンの円と取り違えにくくしてある。
+const BANG_BAR: ((f32, f32), (f32, f32)) = ((13.0, 19.0), (7.0, 18.0));
+const BANG_DOT: ((f32, f32), (f32, f32)) = ((13.0, 19.0), (21.0, 26.0));
 
 fn inside(rect: ((f32, f32), (f32, f32)), x: f32, y: f32) -> bool {
     let ((x0, x1), (y0, y1)) = rect;
@@ -135,6 +137,20 @@ pub struct MenuText {
     pub open_play: &'static str,
     pub launch_at_login: &'static str,
     pub quit: &'static str,
+    /// トレイのツールチップ（状態つき）。
+    pub tooltip_on: &'static str,
+    pub tooltip_off: &'static str,
+    pub tooltip_problem: &'static str,
+}
+
+impl MenuText {
+    pub fn tooltip(&self, state: IconState) -> &'static str {
+        match state {
+            IconState::On => self.tooltip_on,
+            IconState::Off => self.tooltip_off,
+            IconState::Problem => self.tooltip_problem,
+        }
+    }
 }
 
 pub fn menu_text(lang: MenuLang) -> &'static MenuText {
@@ -144,6 +160,9 @@ pub fn menu_text(lang: MenuLang) -> &'static MenuText {
         open_play: "演奏モードを開く",
         launch_at_login: "ログイン時に起動",
         quit: "終了",
+        tooltip_on: "drumclack: オン",
+        tooltip_off: "drumclack: オフ",
+        tooltip_problem: "drumclack: 問題あり（設定を開いて確認）",
     };
     static EN: MenuText = MenuText {
         enabled: "On",
@@ -151,6 +170,9 @@ pub fn menu_text(lang: MenuLang) -> &'static MenuText {
         open_play: "Open Play Mode",
         launch_at_login: "Launch at Login",
         quit: "Quit",
+        tooltip_on: "drumclack: On",
+        tooltip_off: "drumclack: Off",
+        tooltip_problem: "drumclack: Problem (open Settings to check)",
     };
     match lang {
         MenuLang::Ja => &JA,
@@ -162,24 +184,32 @@ pub fn menu_text(lang: MenuLang) -> &'static MenuText {
 // 「初めて音が鳴った」を1回だけ書く
 // ============================================================================
 
-/// 「音が鳴った」を見張り、最初の1回だけ `on_first` を呼ぶ。2回目以降は何もしない。
+/// 「音が鳴った」を見張り、最初の1回だけ `on_first`（保存）を呼ぶ。保存に成功したら、2回目以降は何もしない。
+/// 保存に失敗した（`on_first` が `false` を返した）ときは、次に見たときにもう一度試す。
 /// すでに `first_sound_done` が真で起動したときは、最初から何もしない（ファイルを書き直さない）。
 pub struct FirstSoundGate {
     done: AtomicBool,
-    on_first: Box<dyn Fn() + Send + Sync>,
+    on_first: Box<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl FirstSoundGate {
-    pub fn new(already_done: bool, on_first: impl Fn() + Send + Sync + 'static) -> Self {
+    /// `on_first` は保存して、成功したかを返す。
+    pub fn new(already_done: bool, on_first: impl Fn() -> bool + Send + Sync + 'static) -> Self {
         Self { done: AtomicBool::new(already_done), on_first: Box::new(on_first) }
     }
 
-    /// 今までに音が鳴ったか（`played`）を渡す。鳴っていて、まだ書いていなければ1回だけ書く。
+    /// 今までに音が鳴ったか（`played`）を渡す。鳴っていて、まだ保存できていなければ保存を試みる。
     pub fn observe(&self, played: bool) {
-        if played && !self.done.swap(true, Ordering::SeqCst) {
-            (self.on_first)();
+        if played && !self.done.swap(true, Ordering::SeqCst) && !(self.on_first)() {
+            self.done.store(false, Ordering::SeqCst);
         }
     }
+}
+
+/// 見張り1回分。エンジンが実際に音を鳴らした記録があるかを見て、ゲートへ渡す。
+/// 見るのは「鳴ったか」の真偽だけ（打鍵の内容・時刻は扱わない）。
+pub fn watch_first_sound(state: &AppState, gate: &FirstSoundGate) {
+    gate.observe(state.last_play_ms().is_some());
 }
 
 #[cfg(test)]
@@ -261,9 +291,7 @@ mod tests {
 
     /// 本番と同じ配線（ゲート → ストアの mark_first_sound_done）で、書き込みの回数を数える。
     fn gate_writing_to(store: Arc<SettingsStore>, already_done: bool) -> FirstSoundGate {
-        FirstSoundGate::new(already_done, move || {
-            store.mark_first_sound_done();
-        })
+        FirstSoundGate::new(already_done, move || !store.mark_first_sound_done().save_failed)
     }
 
     #[test]
@@ -306,6 +334,7 @@ mod tests {
         let counter = count.clone();
         let gate = FirstSoundGate::new(false, move || {
             counter.fetch_add(1, Ordering::SeqCst);
+            true
         });
         for _ in 0..5 {
             gate.observe(false);
@@ -315,6 +344,105 @@ mod tests {
             gate.observe(true);
         }
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_save_is_retried_on_the_next_look_until_it_succeeds_then_never_again() {
+        use std::sync::atomic::AtomicUsize;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = attempts.clone();
+        // 1回目・2回目は保存に失敗し、3回目で成功する。
+        let gate = FirstSoundGate::new(false, move || counter.fetch_add(1, Ordering::SeqCst) + 1 >= 3);
+        gate.observe(true);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        gate.observe(true);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2, "失敗したので次の周期で再試行する");
+        gate.observe(true);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        for _ in 0..3 {
+            gate.observe(true);
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 3, "成功したあとは書かない");
+    }
+
+    #[test]
+    fn with_the_real_store_a_save_that_cannot_be_written_is_reported_as_failure() {
+        // 保存先が無い設定（書けない）では mark_first_sound_done の結果が失敗になり、ゲートは再試行を続ける。
+        use std::sync::atomic::AtomicUsize;
+        let store = Arc::new(SettingsStore::open(None, Some(engine())));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = attempts.clone();
+        let gate = FirstSoundGate::new(false, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            !store.mark_first_sound_done().save_failed
+        });
+        gate.observe(true);
+        gate.observe(true);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    // ---- 見張り1回分（AppState を受ける） ----
+
+    #[test]
+    fn one_watch_pass_writes_first_sound_done_only_after_a_sound_really_played() {
+        use crate::audio::Mixer;
+        use crate::state::AudioInitStatus;
+        let dir = TempDir::new();
+        let engine = engine();
+        let state = AppState::new(AudioInitStatus::Ok { sample_rate: 48_000 }, Some(engine.clone()));
+        let store = Arc::new(SettingsStore::open(Some(dir.0.clone()), Some(engine.clone())));
+        let gate = gate_writing_to(store, false);
+
+        // 要求を積んだだけ（まだ鳴っていない）では書かない。
+        watch_first_sound(&state, &gate);
+        engine.play("kick", 0, 1.0);
+        watch_first_sound(&state, &gate);
+        assert!(!settings_file(&dir).exists(), "音声コールバックが受理する前は書かない");
+
+        // 実際に鳴ったら、次の見張りで書く。
+        let mut mixer = Mixer::new(engine.clone());
+        let mut buf = vec![0.0_f32; 128];
+        mixer.fill_output(&mut buf, 1);
+        watch_first_sound(&state, &gate);
+        assert!(load(&dir.0).settings.first_sound_done);
+
+        // その後は書かない。
+        fs::remove_file(settings_file(&dir)).unwrap();
+        watch_first_sound(&state, &gate);
+        assert!(!settings_file(&dir).exists());
+    }
+
+    // ---- 画面に権限を出さない・自動で登録しない ----
+
+    #[test]
+    fn the_screen_capability_lists_only_the_four_commands_and_no_plugin_permission() {
+        const CAPABILITY: &str = include_str!("../capabilities/default.json");
+        let value: serde_json::Value = serde_json::from_str(CAPABILITY).unwrap();
+        let mut permissions: Vec<&str> =
+            value["permissions"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()).collect();
+        permissions.sort();
+        assert_eq!(
+            permissions,
+            ["allow-get-settings", "allow-get-status", "allow-preview-sound", "allow-update-settings"]
+        );
+        assert!(!CAPABILITY.contains("autostart"), "ログイン時の起動の権限を画面に出していない");
+        assert!(!CAPABILITY.contains("single-instance"));
+    }
+
+    #[test]
+    fn autostart_is_never_registered_at_startup_only_from_the_menu_handler() {
+        const MAIN_RS: &str = include_str!("main.rs");
+        const TRAY_RS: &str = include_str!("tray.rs");
+        // main.rs（起動の配線）は、登録も解除も呼ばない。
+        for call in [".enable()", ".disable()", "autolaunch()"] {
+            assert!(!MAIN_RS.contains(call), "main.rs が {call} を呼んでいる");
+        }
+        // tray.rs でも、登録・解除はメニューの処理（handle_menu_event）より後ろにしか無い。
+        let handler = TRAY_RS.find("fn handle_menu_event").expect("メニューの処理がある");
+        for call in [".enable()", ".disable()"] {
+            let first = TRAY_RS.find(call).expect("メニューから切り替える処理がある");
+            assert!(first > handler, "メニュー以外（起動時など）で {call} を呼んでいる");
+        }
     }
 
     // ---- アイコンの状態・窓を出す条件 ----
@@ -382,5 +510,31 @@ mod tests {
             assert!(!j.is_empty() && !e.is_empty());
             assert_ne!(j, e, "日英で同じ文言になっている: {j}");
         }
+    }
+
+    #[test]
+    fn tooltips_name_the_state_in_both_languages() {
+        for lang in [MenuLang::Ja, MenuLang::En] {
+            let text = menu_text(lang);
+            let all = [
+                text.tooltip(IconState::On),
+                text.tooltip(IconState::Off),
+                text.tooltip(IconState::Problem),
+            ];
+            assert_ne!(all[0], all[1]);
+            assert_ne!(all[0], all[2]);
+            assert_ne!(all[1], all[2]);
+        }
+        assert_ne!(menu_text(MenuLang::Ja).tooltip(IconState::On), menu_text(MenuLang::En).tooltip(IconState::On));
+    }
+
+    #[test]
+    fn the_problem_mark_is_wide_enough_to_tell_from_the_on_circle() {
+        // 中心の行で、円の中の透明な画素（「！」の棒）が6px以上あること。
+        let pixels = icon_rgba(IconState::Problem);
+        let row = ICON_SIZE / 2 - 4;
+        let transparent = (0..ICON_SIZE).filter(|&x| pixels[((row * ICON_SIZE + x) * 4 + 3) as usize] == 0).count();
+        let outside = (0..ICON_SIZE).filter(|&x| (x as f32 + 0.5 - 16.0).abs() > ICON_OUTER_RADIUS).count();
+        assert!(transparent - outside >= 6, "「！」の太さが足りない: {}", transparent - outside);
     }
 }

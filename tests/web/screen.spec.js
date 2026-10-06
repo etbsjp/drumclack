@@ -648,6 +648,19 @@ test.describe("常駐との接点", () => {
     await id(page, "setting-language").selectOption("en");
     await expect(id(page, "resident-note")).toHaveText(en["app.resident"]);
     expect(ja["app.resident"]).not.toBe(en["app.resident"]);
+    // 短い脚注であること（長い説明にしない）。
+    expect(ja["app.resident"].length).toBeLessThanOrEqual(60);
+    expect(en["app.resident"].length).toBeLessThanOrEqual(130);
+  });
+
+  test("常駐の文は、状態の帯より下に置く（見出しの直下で警告に先立たない）", async ({ page }) => {
+    await openApp(page);
+    const noteIsAfterBand = await page.evaluate(() => {
+      const band = document.querySelector('[data-testid="status-band"]');
+      const note = document.querySelector('[data-testid="resident-note"]');
+      return Boolean(band.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+    expect(noteIsAfterBand).toBe(true);
   });
 
   test("Rust が呼ぶ入口で、演奏の区画だけが開く。知らない名前は何も変えない", async ({ page }) => {

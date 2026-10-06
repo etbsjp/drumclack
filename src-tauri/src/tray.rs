@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager, Wry};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::resident::{
-    icon_rgba, icon_state, menu_text, resolve_menu_lang, FirstSoundGate, IconState, MenuLang, ICON_SIZE,
+    icon_rgba, icon_state, menu_text, resolve_menu_lang, watch_first_sound, FirstSoundGate, IconState, MenuLang, ICON_SIZE,
 };
 use crate::settings_store::SettingsStore;
 use crate::state::AppState;
@@ -122,7 +122,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         .icon(load_icon(icon_state))
         // Mac のメニューバーは、形（透明度）だけを使うテンプレート画像として出す（明暗に自動で合う）。
         .icon_as_template(true)
-        .tooltip("drumclack")
+        .tooltip(text.tooltip(icon_state))
         .menu(&menu)
         .on_menu_event(handle_menu_event)
         .build(app)?;
@@ -160,6 +160,10 @@ pub fn refresh(app: &AppHandle) {
         let _ = tray.icon.set_icon(Some(load_icon(icon_state)));
         // set_icon のあとにテンプレート指定が外れる OS があるため、毎回付け直す。
         let _ = tray.icon.set_icon_as_template(true);
+    }
+    if previous != Some((icon_state, lang)) {
+        // ツールチップは状態か言語が変わったときだけ更新する。
+        let _ = tray.icon.set_tooltip(Some(menu_text(lang).tooltip(icon_state)));
     }
     if previous.map(|(_, l)| l) != Some(lang) {
         let text = menu_text(lang);
@@ -204,7 +208,7 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
 pub fn spawn_watcher(app: AppHandle, first_sound: FirstSoundGate) {
     std::thread::spawn(move || loop {
         if let Some(state) = app.try_state::<Arc<AppState>>() {
-            first_sound.observe(state.last_play_ms().is_some());
+            watch_first_sound(&state, &first_sound);
         }
         refresh(&app);
         std::thread::sleep(POLL_INTERVAL);

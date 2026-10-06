@@ -179,7 +179,7 @@ impl Mixer {
     /// オーディオコールバックから呼ばれる本番の再生経路。
     /// 溜まった発音の要求を取り込み、`data`（インターリーブ済みの出力バッファ）を
     /// チャンネル数ごとに分割して、フレーム単位でモノラルの音を書き込む。
-    fn fill_output(&mut self, data: &mut [f32], channels: usize) {
+    pub(crate) fn fill_output(&mut self, data: &mut [f32], channels: usize) {
         while let Some(request) = self.engine.requests.pop() {
             if self.pool.start(&self.engine.kit, request, self.fade_samples) {
                 self.engine.last_accepted_play_ms.store(now_epoch_ms(), Ordering::Relaxed);

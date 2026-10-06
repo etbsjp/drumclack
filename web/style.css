@@ -254,7 +254,7 @@ h1 {
 .resident-note {
   margin: 0 0 12px;
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
 }
 
 .placeholder {

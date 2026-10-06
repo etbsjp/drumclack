@@ -1,6 +1,6 @@
 {
   "app.title": "drumclack",
-  "app.resident": "Closing this window does not quit drumclack. It keeps running in the menu bar (the system tray on Windows). To quit, choose Quit from the icon's menu.",
+  "app.resident": "Closing this window does not quit drumclack; it keeps running in the menu bar / tray. To quit, use Quit in the icon's menu.",
   "common.close": "Close",
   "nav.label": "Sections",
   "nav.settings": "Settings",
