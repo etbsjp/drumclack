@@ -40,7 +40,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: shellcheck
-        run: shellcheck tools/ci/check_no_network_crates.sh tools/ci/check_csp.sh
+        run: shellcheck tools/ci/check_no_network_crates.sh tools/ci/check_csp.sh tools/ci/test_checks.sh
+
+      # 検査が緩んで何でも通すようになっていないこと（悪い入力で exit 1 になること）の確認。
+      - name: 検査スクリプトの自己テスト（悪い入力で落ちること）
+        run: bash tools/ci/test_checks.sh
 
       - name: 通信系・自動更新系のクレートが依存に無いこと
         run: bash tools/ci/check_no_network_crates.sh

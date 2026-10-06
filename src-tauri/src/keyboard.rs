@@ -194,6 +194,20 @@ mod macos_tap {
     /// 状態機械へ渡す。listen-only タップでは戻り値は OS 側で無視されるが、
     /// 慣例に従い受け取った `event` をそのまま返す。
     extern "C" fn tap_callback(
+        proxy: CgEventTapProxy,
+        event_type: CgEventType,
+        event: CgEventRef,
+        user_info: *mut c_void,
+    ) -> CgEventRef {
+        // C のコールバックから panic が出ると未定義動作になるため、ここで止める。
+        // 内容（キーの位置・panic の文面）は何も出力しない。
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tap_callback_body(proxy, event_type, event, user_info)
+        }));
+        event
+    }
+
+    fn tap_callback_body(
         _proxy: CgEventTapProxy,
         event_type: CgEventType,
         event: CgEventRef,
@@ -414,6 +428,16 @@ mod windows_hook {
     }
 
     unsafe extern "system" fn hook_proc(code: i32, w_param: usize, l_param: isize) -> isize {
+        // panic が出ても必ず次のフックへ渡す（キー入力を他のアプリから奪わない）。
+        // 内容（キーの位置・panic の文面）は何も出力しない。
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle_hook_event(code, l_param)
+        }));
+        // イベントは握りつぶさず、必ず次のフックへ渡す。
+        unsafe { CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param) }
+    }
+
+    fn handle_hook_event(code: i32, l_param: isize) {
         if code == HC_ACTION {
             // SAFETY: HC_ACTION のとき l_param は有効な KBDLLHOOKSTRUCT を指す。
             let info = unsafe { &*(l_param as *const KbdLlHookStruct) };
@@ -433,8 +457,6 @@ mod windows_hook {
                 });
             }
         }
-        // イベントは握りつぶさず、必ず次のフックへ渡す。
-        unsafe { CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param) }
     }
 
     pub fn spawn_listener(engine: Arc<AudioEngine>, state: Arc<AppState>) {
