@@ -8,6 +8,9 @@
 mod audio;
 mod drums;
 mod keyboard;
+mod key_position;
+mod key_tables;
+mod key_tracker;
 mod kick;
 mod permission;
 mod state;

@@ -28,6 +28,30 @@ jobs:
       - name: cargo test
         run: cargo test --verbose
 
+  # 通信が混ざらないことを固定する検査。依存に通信系・自動更新系のクレートが入ったとき、
+  # または CSP が決めた値から変わったときに落とす。
+  privacy-guards:
+    name: 通信が混ざっていないことの検査
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: shellcheck
+        run: shellcheck tools/ci/check_no_network_crates.sh tools/ci/check_csp.sh tools/ci/test_checks.sh
+
+      # 検査が緩んで何でも通すようになっていないこと（悪い入力で exit 1 になること）の確認。
+      - name: 検査スクリプトの自己テスト（悪い入力で落ちること）
+        run: bash tools/ci/test_checks.sh
+
+      - name: 通信系・自動更新系のクレートが依存に無いこと
+        run: bash tools/ci/check_no_network_crates.sh
+
+      - name: tauri.conf.json の CSP が変わっていないこと
+        run: bash tools/ci/check_csp.sh
+
   resources-scripts-lint:
     name: tools/resources syntax check
     runs-on: ubuntu-latest

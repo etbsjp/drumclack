@@ -6,22 +6,26 @@
 //!   直接 FFI で張る（[`macos_tap`] モジュール）。これは他アプリへのイベント伝播を
 //!   止めない“傍受のみ”のタップで、必要な権限も「アクセシビリティ」ではなく
 //!   「入力監視（Input Monitoring）」のみで済む。
-//!   以前は `rdev` クレートを使っていたが、`rdev` はキーイベントごとに
-//!   `TSMGetInputSourceProperty` 等の HIToolbox API を内部で呼んでおり、
-//!   macOS 15 以降ではメインスレッド以外からの呼び出しで `dispatch_assert_queue_fail`
-//!   により停止する事例が報告されたため（README参照）、キーコード→文字列変換を
-//!   一切行わない素の `CGEventTap` 直叩きへ切り替えた。
-//! - Windows: 引き続き `rdev::listen` を使う。内部で `SetWindowsHookEx(WH_KEYBOARD_LL, ...)`
-//!   による低レベルキーボードフックを使い、これも受信専用でイベントを握りつぶさない。
+//!   `rdev` は使わない。`rdev` はキーイベントごとに `TSMGetInputSourceProperty` 等の
+//!   HIToolbox API を内部で呼び、macOS 15 以降ではメインスレッド以外からの呼び出しで
+//!   `dispatch_assert_queue_fail` により停止する事例が報告されたため（README参照）。
+//!   読むのはキーコード（物理位置）とリピートの印・修飾フラグだけで、文字や入力ソースを
+//!   引く API は一切呼ばない。
+//! - Windows: 低レベルキーボードフック（`WH_KEYBOARD_LL`）を直接呼ぶ
+//!   （[`windows_hook`] モジュール）。読むのは走査コードと拡張キーの印・離しの印だけ
+//!   （仮想キーコードは配列・NumLock に依存するので読まない）。マウスのフックは張らず、
+//!   イベントも握りつぶさない。
 //!
-//! いずれの方式でも、扱うのは「キーが押された」というタイミングのみ。
-//! どのキーが押されたか（文字・キーコード）は一切保存・表示・ログ出力しない。
+//! キーの位置は音を選ぶことにだけ使い、保存も記録もしない。位置を表す型
+//! （[`KeyPosition`]）は表示・ログ出力・保存の機能を持たず、[`sound_name_for`] の外へ出さない。
 
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use crate::audio::AudioEngine;
+use crate::key_position::KeyPosition;
+use crate::key_tracker::{KeyEvent, KeyTracker};
 use crate::state::AppState;
 
 /// キー入力監視を開始する（プラットフォームごとの実装は下記の各モジュールへ委譲）。
@@ -29,47 +33,74 @@ pub fn spawn_listener(engine: Arc<AudioEngine>, state: Arc<AppState>) {
     #[cfg(target_os = "macos")]
     macos_tap::spawn_listener(engine, state);
 
-    #[cfg(not(target_os = "macos"))]
-    rdev_listener::spawn_listener(engine, state);
+    #[cfg(target_os = "windows")]
+    windows_hook::spawn_listener(engine, state);
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (engine, state);
+        eprintln!("[drumclack] この OS ではキー入力の監視に対応していません");
+    }
 }
 
-/// キー押下（タイミングのみ）を受けて発音を試みる、プラットフォーム共通の処理。
+/// キーの位置を音の名前に変える、唯一の場所。キーの位置はここで使い切る。
+///
+/// この issue ではどのキーでもキックのまま。割り当て（グループ・個別の上書き）は後続の issue で入れる。
+fn sound_name_for(_position: KeyPosition) -> &'static str {
+    "kick"
+}
+
+/// 監視から届いたイベントを状態機械に通し、新しく押されたときだけ発音を試みる。
+fn dispatch(
+    tracker: &mut KeyTracker,
+    event: KeyEvent,
+    engine: &Arc<AudioEngine>,
+    state: &Arc<AppState>,
+) {
+    if let Some(position) = tracker.handle(event) {
+        handle_key_down(engine.clone(), state.clone(), sound_name_for(position));
+    }
+}
+
+/// キー押下を受けて発音を試みる、プラットフォーム共通の処理。
 ///
 /// `DRUMCLACK_TEST_DELAY_MS` が設定されていれば、その分だけ遅延させてから
 /// 発音する（測定用の陽性対照）。呼び出し元のイベントループ／コールバックの
 /// スレッドを長時間ブロックしないよう、遅延がある場合は別スレッドへ逃がす。
-fn handle_key_down(engine: Arc<AudioEngine>, state: Arc<AppState>) {
+fn handle_key_down(engine: Arc<AudioEngine>, state: Arc<AppState>, sound_name: &'static str) {
     match state.test_delay_ms {
         Some(ms) => {
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(ms));
-                trigger(&engine);
+                trigger(&engine, sound_name);
             });
         }
-        None => trigger(&engine),
+        None => trigger(&engine, sound_name),
     }
 }
 
-fn trigger(engine: &AudioEngine) {
+fn trigger(engine: &AudioEngine, sound_name: &str) {
     // 直近の発音時刻は、音声コールバックが実際に鳴らした時点でエンジン側が記録する
-    // （16音の上限で鳴らなかった打鍵は記録されない）。音の名前の割り当ては後続の issue で行う。
-    engine.play_varied("kick", 1.0);
+    // （16音の上限で鳴らなかった打鍵は記録されない）。
+    engine.play_varied(sound_name, 1.0);
 }
 
 /// macOS: `CGEventTap` への直接 FFI によるキー監視。
 ///
-/// `rdev` を経由しない理由は本モジュール冒頭のコメント、および README を参照。
-/// ここで使う CoreGraphics / CoreFoundation の API はいずれも「タップの作成・
-/// 有効化・ランループへの登録」という配管作業のみで、キーコードや文字列を
-/// 一切読み取らない（コールバック内でイベント種別が `KeyDown` かどうかだけを見る）。
+/// ここで使う CoreGraphics / CoreFoundation の API は、タップの配管と、イベントから
+/// キーコード・リピートの印・修飾フラグという数値を読むものだけ。文字列や入力ソースを
+/// 引く API（`CGEventKeyboardGetUnicodeString`、TIS 系など）は呼ばない。
 #[cfg(target_os = "macos")]
 mod macos_tap {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::ffi::c_void;
     use std::sync::Arc;
 
-    use super::handle_key_down;
+    use super::dispatch;
     use crate::audio::AudioEngine;
+    use crate::key_position::KeyPosition;
+    use crate::key_tables::{mac_keycode_to_position, mac_modifier_change, ModifierAction};
+    use crate::key_tracker::{KeyEvent, KeyTracker};
     use crate::state::AppState;
 
     // 以降、CoreGraphics/CoreFoundation の型・定数は必要最小限のみを素の FFI で宣言する
@@ -89,6 +120,8 @@ mod macos_tap {
     type CgEventTapOptions = u32;
     type CgEventType = u32;
     type CgEventMask = u64;
+    type CgEventField = u32;
+    type CgEventFlags = u64;
 
     /// セッション内（現在ログイン中のユーザーセッション）のイベントを対象にする。
     /// `kCGHIDEventTap`（より低レベル）は使わない。
@@ -97,9 +130,16 @@ mod macos_tap {
     /// 傍受のみ（他アプリへのイベント伝播を止めない）。要件どおり。
     const K_CG_EVENT_TAP_OPTION_LISTEN_ONLY: CgEventTapOptions = 1;
     const K_CG_EVENT_KEY_DOWN: CgEventType = 10;
+    const K_CG_EVENT_KEY_UP: CgEventType = 11;
+    /// 修飾キー（Shift・Cmd 等）の変化は、通常の押下とは別のイベントで届く。
+    const K_CG_EVENT_FLAGS_CHANGED: CgEventType = 12;
     /// タイムアウトやユーザー操作でタップが無効化されたことを示す特殊イベント種別。
     const K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT: CgEventType = 0xFFFF_FFFE;
     const K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT: CgEventType = 0xFFFF_FFFF;
+    /// OS が付けるキーリピートの印（0 以外ならリピート）。
+    const K_CG_KEYBOARD_EVENT_AUTOREPEAT: CgEventField = 8;
+    /// 物理キーの仮想キーコード（配列・入力ソースに依存しない）。
+    const K_CG_KEYBOARD_EVENT_KEYCODE: CgEventField = 9;
 
     type CgEventTapCallBack = extern "C" fn(
         proxy: CgEventTapProxy,
@@ -120,6 +160,8 @@ mod macos_tap {
         ) -> CFMachPortRef;
 
         fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+        fn CGEventGetIntegerValueField(event: CgEventRef, field: CgEventField) -> i64;
+        fn CGEventGetFlags(event: CgEventRef) -> CgEventFlags;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -136,20 +178,37 @@ mod macos_tap {
         static kCFRunLoopCommonModes: CFStringRef;
     }
 
-    /// コールバックへ渡す最小限の共有コンテキスト。押されたキーの情報は含まない。
+    /// コールバックへ渡す共有コンテキスト。押下中のキーの集合（`tracker`）は
+    /// このスレッドの中だけで使い、外へ出さない。
     /// `tap` はタップ作成後に埋める（無効化通知を受けた際の再有効化に使う）。
     struct TapContext {
         engine: Arc<AudioEngine>,
         state: Arc<AppState>,
+        tracker: RefCell<KeyTracker>,
         tap: Cell<CFMachPortRef>,
     }
 
     /// CGEventTap のコールバック本体。
     ///
-    /// イベント種別が `KeyDown` かどうかだけを見て発音をトリガーする。
-    /// イベントの中身（キーコード等）は一切読み取らない。listen-only タップでは
-    /// 戻り値は OS 側で無視されるが、慣例に従い受け取った `event` をそのまま返す。
+    /// イベント種別に応じて、キーコード・リピートの印・修飾フラグだけを読み、
+    /// 状態機械へ渡す。listen-only タップでは戻り値は OS 側で無視されるが、
+    /// 慣例に従い受け取った `event` をそのまま返す。
     extern "C" fn tap_callback(
+        proxy: CgEventTapProxy,
+        event_type: CgEventType,
+        event: CgEventRef,
+        user_info: *mut c_void,
+    ) -> CgEventRef {
+        // C のコールバックから panic が出ると未定義動作になるため、ここで止める。
+        // ここでは何も出力しない（既定の panic フックは文面を stderr に出すが、
+        // KeyPosition は Debug/Display を持たないため、キーの位置が文面に載ることはない）。
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tap_callback_body(proxy, event_type, event, user_info)
+        }));
+        event
+    }
+
+    fn tap_callback_body(
         _proxy: CgEventTapProxy,
         event_type: CgEventType,
         event: CgEventRef,
@@ -159,13 +218,15 @@ mod macos_tap {
         // `Box::into_raw` した `TapContext` へのポインタで、
         // 監視スレッドが生きている（= プロセスが動いている）間は有効。
         // コールバックは登録元スレッドのランループ上でのみ呼ばれるため、
-        // 単一スレッドからのアクセスに限られる（Cell で十分）。
+        // 単一スレッドからのアクセスに限られる（Cell / RefCell で十分）。
         let ctx = unsafe { &*(user_info as *const TapContext) };
 
         if event_type == K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT
             || event_type == K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT
         {
-            // 処理に時間がかかった等でOSがタップを自動的に無効化することがある。
+            // 止められている間のキーの離しは届かない。押下中の集合を空にしないと、
+            // その間に離したキーが「押されたまま」扱いになり、二度と鳴らなくなる。
+            ctx.tracker.borrow_mut().handle(KeyEvent::MonitoringInterrupted);
             // 放置すると以降キーを検知できなくなるため、直ちに再有効化する。
             let tap = ctx.tap.get();
             if !tap.is_null() {
@@ -174,20 +235,73 @@ mod macos_tap {
             return event;
         }
 
-        if event_type != K_CG_EVENT_KEY_DOWN {
-            return event;
+        match event_type {
+            K_CG_EVENT_KEY_DOWN | K_CG_EVENT_KEY_UP => {
+                let Some(position) = read_position(event) else {
+                    return event;
+                };
+                let key_event = if event_type == K_CG_EVENT_KEY_DOWN {
+                    // SAFETY: event はコールバック中のみ有効な有効なイベント。
+                    let autorepeat =
+                        unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_AUTOREPEAT) } != 0;
+                    KeyEvent::Down { position, autorepeat }
+                } else {
+                    KeyEvent::Up { position }
+                };
+                dispatch_event(ctx, key_event);
+            }
+            K_CG_EVENT_FLAGS_CHANGED => {
+                // SAFETY: 同上。
+                let keycode = unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
+                let flags = unsafe { CGEventGetFlags(event) };
+                let change = u16::try_from(keycode)
+                    .ok()
+                    .and_then(|keycode| mac_modifier_change(keycode, flags));
+                if let Some((position, action)) = change {
+                    modifier_events(position, action, |e| dispatch_event(ctx, e));
+                }
+            }
+            _ => {}
         }
-
-        handle_key_down(ctx.engine.clone(), ctx.state.clone());
         event
+    }
+
+    fn read_position(event: CgEventRef) -> Option<KeyPosition> {
+        // SAFETY: event はコールバック中のみ有効な有効なイベント。
+        let keycode = unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
+        mac_keycode_to_position(u16::try_from(keycode).ok()?)
+    }
+
+    fn dispatch_event(ctx: &TapContext, event: KeyEvent) {
+        dispatch(&mut ctx.tracker.borrow_mut(), event, &ctx.engine, &ctx.state);
+    }
+
+    /// 修飾キーの変化を、通常キーと同じ押下・離しのイベントへ直す。
+    fn modifier_events(position: KeyPosition, action: ModifierAction, mut emit: impl FnMut(KeyEvent)) {
+        match action {
+            ModifierAction::Down => emit(KeyEvent::Down { position, autorepeat: false }),
+            ModifierAction::Up => emit(KeyEvent::Up { position }),
+            // CapsLock は離しが届かないので、押して即離した扱いにして集合に残さない。
+            ModifierAction::Pressed => {
+                emit(KeyEvent::Down { position, autorepeat: false });
+                emit(KeyEvent::Up { position });
+            }
+        }
     }
 
     pub fn spawn_listener(engine: Arc<AudioEngine>, state: Arc<AppState>) {
         std::thread::spawn(move || {
-            let ctx = Box::new(TapContext { engine, state, tap: Cell::new(std::ptr::null_mut()) });
+            let ctx = Box::new(TapContext {
+                engine,
+                state,
+                tracker: RefCell::new(KeyTracker::new()),
+                tap: Cell::new(std::ptr::null_mut()),
+            });
             let ctx_ptr = Box::into_raw(ctx);
 
-            let event_mask: CgEventMask = 1u64 << K_CG_EVENT_KEY_DOWN;
+            let event_mask: CgEventMask = (1u64 << K_CG_EVENT_KEY_DOWN)
+                | (1u64 << K_CG_EVENT_KEY_UP)
+                | (1u64 << K_CG_EVENT_FLAGS_CHANGED);
 
             // SAFETY: 渡す関数ポインタ・ユーザーデータのポインタはいずれも
             // このスレッドが生きている間有効であり、CFRunLoopRun() が
@@ -237,40 +351,140 @@ mod macos_tap {
     }
 }
 
-/// Windows: `rdev::listen`（内部で `SetWindowsHookEx(WH_KEYBOARD_LL, ...)`）による
-/// 低レベルキーボードフック。macOSのような HIToolbox 由来の制約は無いため、
-/// 従来どおり `rdev` を利用する。
-#[cfg(not(target_os = "macos"))]
-mod rdev_listener {
+/// Windows: 低レベルキーボードフック（`WH_KEYBOARD_LL`）の直接呼び出し。
+///
+/// `rdev` を使わない理由は、打鍵のたびに内部で文字を作ること、マウスのフックも同時に張ること、
+/// 取れるキーが配列依存でテンキーの Enter を区別できないこと。ここでは `windows-sys` 等も足さず、
+/// macOS 側と同じく必要な API だけを素の FFI で宣言する。
+/// フックはキーボードだけで、イベントは常に次のフックへ渡す（握りつぶさない）。
+#[cfg(target_os = "windows")]
+mod windows_hook {
+    use std::cell::RefCell;
+    use std::ffi::c_void;
     use std::sync::Arc;
-    use std::thread;
 
-    use rdev::EventType;
-
-    use super::handle_key_down;
+    use super::dispatch;
     use crate::audio::AudioEngine;
+    use crate::key_tables::windows_scancode_to_position;
+    use crate::key_tracker::{KeyEvent, KeyTracker};
     use crate::state::AppState;
 
-    /// `rdev::listen` はブロッキング呼び出し（内部でOSのイベントループを回す）
-    /// のため、専用スレッドを立てて実行する。権限が無い環境では `listen` 自体が
-    /// エラーを返すか、あるいはイベントが一切届かない状態になるが、
-    /// いずれの場合もアプリ本体はクラッシュしない。
-    pub fn spawn_listener(engine: Arc<AudioEngine>, state: Arc<AppState>) {
-        thread::spawn(move || {
-            let callback = move |event: rdev::Event| {
-                // 押されたキーの種類（Key の中身）には一切触れない。
-                // イベントの種別が KeyPress かどうかだけを見て、押下タイミングとして扱う。
-                if !matches!(event.event_type, EventType::KeyPress(_)) {
-                    return;
-                }
-                handle_key_down(engine.clone(), state.clone());
-            };
+    const WH_KEYBOARD_LL: i32 = 13;
+    const HC_ACTION: i32 = 0;
+    /// 拡張キー（テンキー Enter・右 Ctrl・本体の矢印など）の印。
+    const LLKHF_EXTENDED: u32 = 0x01;
+    /// 離したときに立つ印。
+    const LLKHF_UP: u32 = 0x80;
 
-            if let Err(err) = rdev::listen(callback) {
-                eprintln!(
-                    "[drumclack] キー入力の監視を開始できませんでした（入力監視の権限が未許可の可能性があります）: {err:?}"
-                );
+    /// `KBDLLHOOKSTRUCT`。仮想キーコードは配列・NumLock に依存するため読まない
+    /// （配置を合わせるためだけに持つ）。
+    #[repr(C)]
+    struct KbdLlHookStruct {
+        _vk_code: u32,
+        scan_code: u32,
+        flags: u32,
+        _time: u32,
+        _extra_info: usize,
+    }
+
+    #[repr(C)]
+    struct Msg {
+        hwnd: *mut c_void,
+        message: u32,
+        w_param: usize,
+        l_param: isize,
+        time: u32,
+        pt_x: i32,
+        pt_y: i32,
+    }
+
+    type HookProc = unsafe extern "system" fn(code: i32, w_param: usize, l_param: isize) -> isize;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowsHookExW(
+            id_hook: i32,
+            proc: HookProc,
+            module: *mut c_void,
+            thread_id: u32,
+        ) -> *mut c_void;
+        fn CallNextHookEx(hook: *mut c_void, code: i32, w_param: usize, l_param: isize) -> isize;
+        fn GetMessageW(msg: *mut Msg, hwnd: *mut c_void, filter_min: u32, filter_max: u32) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleW(module_name: *const u16) -> *mut c_void;
+    }
+
+    struct HookContext {
+        engine: Arc<AudioEngine>,
+        state: Arc<AppState>,
+        tracker: KeyTracker,
+    }
+
+    thread_local! {
+        // フックのコールバックは、フックを張ったこのスレッドでしか呼ばれない。
+        static HOOK_CONTEXT: RefCell<Option<HookContext>> = const { RefCell::new(None) };
+    }
+
+    unsafe extern "system" fn hook_proc(code: i32, w_param: usize, l_param: isize) -> isize {
+        // panic が出ても必ず次のフックへ渡す（キー入力を他のアプリから奪わない）。
+        // ここでは何も出力しない（既定の panic フックは文面を stderr に出すが、
+        // KeyPosition は Debug/Display を持たないため、キーの位置が文面に載ることはない）。
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle_hook_event(code, l_param)
+        }));
+        // イベントは握りつぶさず、必ず次のフックへ渡す。
+        unsafe { CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param) }
+    }
+
+    fn handle_hook_event(code: i32, l_param: isize) {
+        if code == HC_ACTION {
+            // SAFETY: HC_ACTION のとき l_param は有効な KBDLLHOOKSTRUCT を指す。
+            let info = unsafe { &*(l_param as *const KbdLlHookStruct) };
+            let position =
+                windows_scancode_to_position(info.scan_code, info.flags & LLKHF_EXTENDED != 0);
+            if let Some(position) = position {
+                // Windows のフックにはリピートの印が無い。押下中の集合で判定する。
+                let key_event = if info.flags & LLKHF_UP != 0 {
+                    KeyEvent::Up { position }
+                } else {
+                    KeyEvent::Down { position, autorepeat: false }
+                };
+                HOOK_CONTEXT.with(|cell| {
+                    if let Some(ctx) = cell.borrow_mut().as_mut() {
+                        dispatch(&mut ctx.tracker, key_event, &ctx.engine, &ctx.state);
+                    }
+                });
             }
+        }
+    }
+
+    pub fn spawn_listener(engine: Arc<AudioEngine>, state: Arc<AppState>) {
+        std::thread::spawn(move || {
+            HOOK_CONTEXT.with(|cell| {
+                *cell.borrow_mut() = Some(HookContext { engine, state, tracker: KeyTracker::new() });
+            });
+
+            // SAFETY: hook_proc はプロセス生存中有効な関数。モジュールハンドルは自プロセスのもの。
+            let hook = unsafe {
+                SetWindowsHookExW(
+                    WH_KEYBOARD_LL,
+                    hook_proc,
+                    GetModuleHandleW(std::ptr::null()),
+                    0,
+                )
+            };
+            if hook.is_null() {
+                eprintln!("[drumclack] キー入力の監視を開始できませんでした");
+                return;
+            }
+
+            // 低レベルフックは、フックを張ったスレッドでメッセージを取り出し続けている間だけ呼ばれる。
+            // SAFETY: msg は書き込み先として有効な領域。
+            let mut msg: Msg = unsafe { std::mem::zeroed() };
+            while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {}
         });
     }
 }
