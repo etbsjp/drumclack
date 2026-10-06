@@ -10,7 +10,7 @@ set -euo pipefail
 
 CONFIG="${1:-src-tauri/tauri.conf.json}"
 
-EXPECTED='{"csp":"default-src '"'"'self'"'"'; connect-src ipc: http://ipc.localhost"}'
+EXPECTED='{"csp":"default-src '"'"'self'"'"'; connect-src '"'"'self'"'"' ipc: http://ipc.localhost"}'
 
 actual="$(jq -S -c '.app.security' "$CONFIG")"
 expected="$(jq -S -c . <<<"$EXPECTED")"

@@ -7,34 +7,211 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <main>
-      <h1>drumclack</h1>
-      <p id="running" class="lead">常駐稼働中</p>
+    <!-- 文言は i18n/ja.json・en.json にだけ書く。ここには文言を直書きしない。 -->
+    <!-- 画面の起動に失敗したときだけ boot.js が出す（対応表に頼れないため、文言は英日の直書き）。 -->
+    <p class="startup-error" data-testid="startup-error" role="alert" hidden></p>
 
-      <dl class="status-list">
-        <div id="row-permission" class="status-row" hidden>
-          <dt>入力監視の権限</dt>
-          <dd id="permission-value" aria-live="polite" aria-atomic="true">確認中…</dd>
+    <main class="app" data-testid="app">
+      <header class="app-header">
+        <h1 data-i18n="app.title"></h1>
+      </header>
+
+      <!-- 状態の帯: 正常時は1行、異常時は次の操作つき。直近の発音などは「詳細」に畳む。 -->
+      <section
+        class="status-band"
+        data-testid="status-band"
+        data-state="checking"
+        data-i18n-attr="aria-label:status.label"
+      >
+        <ul class="status-issues" data-testid="status-issues" aria-live="polite" aria-atomic="true"></ul>
+        <details class="status-details" data-testid="status-details">
+          <summary data-i18n="status.details"></summary>
+          <dl class="status-detail-list">
+            <div class="status-detail-row" data-testid="detail-permission-row" hidden>
+              <dt data-i18n="status.details.permission"></dt>
+              <dd data-testid="detail-permission"></dd>
+            </div>
+            <div class="status-detail-row">
+              <dt data-i18n="status.details.audio"></dt>
+              <dd data-testid="detail-audio"></dd>
+            </div>
+            <div class="status-detail-row">
+              <dt data-i18n="status.details.lastPlay"></dt>
+              <dd data-testid="detail-last-play"></dd>
+            </div>
+            <div class="status-detail-row">
+              <dt data-i18n="status.details.voices"></dt>
+              <dd data-testid="detail-voices"></dd>
+            </div>
+          </dl>
+        </details>
+      </section>
+
+      <p class="test-mode" data-testid="test-mode" hidden></p>
+
+      <!-- 設定の保存・読み込みの通知。どの区画を開いていても見える場所に置く。 -->
+      <div class="notices" data-testid="notices">
+        <div class="notice notice-warn notice-with-close" data-testid="settings-recovered" role="status" hidden>
+          <p class="notice-text" data-testid="settings-recovered-text"></p>
+          <button
+            type="button"
+            class="notice-close"
+            data-testid="settings-recovered-dismiss"
+            data-i18n="common.close"
+          ></button>
         </div>
+        <p class="notice notice-error" data-testid="settings-error" role="alert" hidden></p>
+      </div>
 
-        <div class="status-row">
-          <dt>音声デバイス</dt>
-          <dd id="audio-value" aria-live="polite" aria-atomic="true">確認中…</dd>
-        </div>
+      <!-- 3つの区画。割り当てと演奏の中身は後の issue（#18・#19）。 -->
+      <div class="tabs" role="tablist" data-i18n-attr="aria-label:nav.label">
+        <button
+          type="button"
+          class="tab"
+          role="tab"
+          id="tab-settings"
+          aria-controls="panel-settings"
+          aria-selected="true"
+          data-testid="tab-settings"
+          data-i18n="nav.settings"
+        ></button>
+        <button
+          type="button"
+          class="tab"
+          role="tab"
+          id="tab-assign"
+          aria-controls="panel-assign"
+          aria-selected="false"
+          tabindex="-1"
+          data-testid="tab-assign"
+          data-i18n="nav.assign"
+        ></button>
+        <button
+          type="button"
+          class="tab"
+          role="tab"
+          id="tab-play"
+          aria-controls="panel-play"
+          aria-selected="false"
+          tabindex="-1"
+          data-testid="tab-play"
+          data-i18n="nav.play"
+        ></button>
+      </div>
 
-        <div class="status-row">
-          <dt>直近の発音</dt>
-          <dd id="last-play-value">待機中</dd>
-        </div>
+      <section
+        class="panel"
+        role="tabpanel"
+        id="panel-settings"
+        aria-labelledby="tab-settings"
+        data-testid="panel-settings"
+      >
+        <form class="settings-form" data-testid="settings-form">
+          <fieldset class="settings-group">
+            <legend data-i18n="settings.group.sound"></legend>
 
-        <div class="status-row">
-          <dt>同時発音数</dt>
-          <dd id="voices-value">0 / 16</dd>
-        </div>
-      </dl>
+            <div class="field">
+              <span class="field-label" data-i18n="settings.enabled"></span>
+              <div class="field-control">
+                <label class="switch-label">
+                  <input type="checkbox" data-testid="setting-enabled" />
+                  <span data-i18n="settings.enabled.label"></span>
+                </label>
+                <p class="field-hint" data-i18n="settings.enabled.hint"></p>
+              </div>
+            </div>
 
-      <p id="test-mode" class="test-mode" hidden></p>
+            <div class="field">
+              <label class="field-label" for="setting-volume" data-i18n="settings.volume"></label>
+              <div class="field-control">
+                <div class="slider-row">
+                  <input
+                    type="range"
+                    id="setting-volume"
+                    min="0"
+                    max="100"
+                    step="1"
+                    data-testid="setting-volume"
+                  />
+                  <output class="slider-value" for="setting-volume" data-testid="setting-volume-value"></output>
+                </div>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label" for="setting-dynamics" data-i18n="settings.dynamics"></label>
+              <div class="field-control">
+                <div class="slider-row">
+                  <input
+                    type="range"
+                    id="setting-dynamics"
+                    min="0"
+                    max="100"
+                    step="1"
+                    data-testid="setting-dynamics"
+                  />
+                  <output class="slider-value" for="setting-dynamics" data-testid="setting-dynamics-value"></output>
+                </div>
+                <p class="field-hint" data-i18n="settings.dynamics.hint"></p>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="settings-group">
+            <legend data-i18n="settings.group.display"></legend>
+
+            <div class="field">
+              <label class="field-label" for="setting-language" data-i18n="settings.language"></label>
+              <div class="field-control">
+                <select id="setting-language" data-testid="setting-language">
+                  <option value="auto" data-i18n="settings.language.auto"></option>
+                  <option value="ja" data-i18n="settings.language.ja"></option>
+                  <option value="en" data-i18n="settings.language.en"></option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label" for="setting-layout" data-i18n="settings.layout"></label>
+              <div class="field-control">
+                <select id="setting-layout" data-testid="setting-layout">
+                  <option value="auto"></option>
+                  <option value="jis" data-i18n="settings.layout.jis"></option>
+                  <option value="us" data-i18n="settings.layout.us"></option>
+                </select>
+                <p class="field-hint" data-i18n="settings.layout.hint"></p>
+              </div>
+            </div>
+          </fieldset>
+        </form>
+      </section>
+
+      <section
+        class="panel"
+        role="tabpanel"
+        id="panel-assign"
+        aria-labelledby="tab-assign"
+        data-testid="panel-assign"
+        hidden
+      >
+        <p class="placeholder" data-i18n="assign.placeholder"></p>
+      </section>
+
+      <section
+        class="panel"
+        role="tabpanel"
+        id="panel-play"
+        aria-labelledby="tab-play"
+        data-testid="panel-play"
+        hidden
+      >
+        <p class="placeholder" data-i18n="play.placeholder"></p>
+      </section>
     </main>
+
+    <script src="./boot.js"></script>
+    <script src="./bridge.js"></script>
+    <script src="./i18n.js"></script>
     <script src="./main.js"></script>
   </body>
 </html>
