@@ -1,5 +1,6 @@
 {
   "app.title": "drumclack",
+  "app.resident": "窓を閉じても drumclack は終了せず、メニューバー（Windows ではタスクトレイ）に残って動き続けます。終了するときは、アイコンのメニューから「終了」を選びます。",
   "common.close": "閉じる",
   "nav.label": "区画",
   "nav.settings": "設定",

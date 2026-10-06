@@ -634,3 +634,36 @@ test.describe("橋渡しとビルド工程", () => {
     expect([...names].sort()).toEqual(["get_settings", "get_status", "update_settings"]);
   });
 });
+
+// ============================================================================
+// 常駐（メニューバー／トレイ）との接点
+// ============================================================================
+
+test.describe("常駐との接点", () => {
+  test("窓を閉じても終了しないことを、窓の中の文で伝える（日英とも）", async ({ page }) => {
+    await openApp(page, { settings: { ...DEFAULT_SETTINGS, language: "ja" } });
+    await expect(id(page, "resident-note")).toBeVisible();
+    await expect(id(page, "resident-note")).toHaveText(ja["app.resident"]);
+
+    await id(page, "setting-language").selectOption("en");
+    await expect(id(page, "resident-note")).toHaveText(en["app.resident"]);
+    expect(ja["app.resident"]).not.toBe(en["app.resident"]);
+  });
+
+  test("Rust が呼ぶ入口で、演奏の区画だけが開く。知らない名前は何も変えない", async ({ page }) => {
+    await openApp(page);
+    await expect(id(page, "panel-settings")).toBeVisible();
+
+    await page.evaluate(() => window.drumclackShowSection("nope"));
+    await expect(id(page, "panel-settings")).toBeVisible();
+
+    await page.evaluate(() => window.drumclackShowSection("play"));
+    await expect(id(page, "panel-play")).toBeVisible();
+    await expect(id(page, "panel-settings")).toBeHidden();
+    await expect(id(page, "tab-play")).toHaveAttribute("aria-selected", "true");
+
+    await page.evaluate(() => window.drumclackShowSection("settings"));
+    await expect(id(page, "panel-settings")).toBeVisible();
+    await expect(id(page, "panel-play")).toBeHidden();
+  });
+});

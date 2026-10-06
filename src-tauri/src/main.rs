@@ -2,6 +2,9 @@
 //
 // 画面は状態表示のみ。他アプリ操作中でもキー入力を受信専用フックで検知し、
 // 起動時に合成しておいたキック音を cpal で鳴らす。通信処理は一切行わない。
+//
+// メニューバー／トレイに常駐する。窓を閉じても終了せず（終了はトレイのメニューの「終了」）、
+// 起動時は窓を出さない（初めて音が鳴るまで／入力監視が未許可／音声デバイス失敗のときは出す）。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -15,15 +18,18 @@ mod key_tables;
 mod key_tracker;
 mod kick;
 mod permission;
+mod resident;
 mod settings;
 mod settings_store;
 mod state;
+mod tray;
 mod voices;
 
 use std::sync::Arc;
 
 use tauri::Manager;
 
+use resident::FirstSoundGate;
 use settings_store::{SettingsSnapshot, SettingsStore};
 use state::{AppState, AudioInitStatus, StatusSnapshot};
 
@@ -61,6 +67,17 @@ fn preview_sound(app_state: tauri::State<'_, Arc<AppState>>, sound: String) -> R
 
 fn main() {
     tauri::Builder::default()
+        // 二重に起動したら、動いている方の設定の窓を開く（渡された引数・作業フォルダは見ない）。
+        // 他のプラグインより先に登録する。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main_window(app, Some("settings"));
+        }))
+        // ログイン時に起動。切り替えはトレイのメニュー（Rust 側）だけが行い、画面には権限を出さない。
+        // ここで登録はしない（利用者がメニューを押したときだけ登録する）。
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None::<Vec<&str>>,
+        ))
         .setup(|app| {
             // 音声デバイスの初期化は起動時に一度だけ行う。失敗しても
             // アプリは起動を続け、画面に失敗理由を表示する（キー監視は続行する
@@ -83,18 +100,37 @@ fn main() {
             // 既定で動き、保存だけ行わない。音量・割り当て・オン／オフは読み込み時に鳴らす側へ反映される。
             // 割り当てを反映してからキー監視を始める（起動直後の打鍵が既定で鳴らないように）。
             let config_dir = app.path().app_config_dir().ok();
-            app.manage(Arc::new(SettingsStore::open_with(
+            let store = Arc::new(SettingsStore::open_with(
                 config_dir,
                 app_state.audio_engine.clone(),
                 app_state.assignments.clone(),
-            )));
+            ));
+            app.manage(store.clone());
 
             // キー入力の監視は、鳴らす対象（音声エンジン）が用意できた場合のみ開始する。
             if let Some(engine) = audio_engine {
                 keyboard::spawn_listener(engine, app_state.clone());
             }
 
-            app.manage(app_state);
+            app.manage(app_state.clone());
+
+            // 常駐: トレイとメニューを作り、起動時に窓を出すかを決め、状態の見張りを始める。
+            // 窓を出すのは、初めて音が鳴るまで／入力監視が未許可／音声デバイスの初期化失敗のとき。
+            tray::setup(app.handle())?;
+            let first_sound_done = store.get().settings.first_sound_done;
+            tray::apply_launch_visibility(
+                app.handle(),
+                resident::show_window_at_launch(
+                    first_sound_done,
+                    app_state.input_permission_ok(),
+                    app_state.audio_ok(),
+                ),
+            );
+            // 初めて音が鳴ったら、first_sound_done を真にして1回だけ保存する。
+            let first_sound = FirstSoundGate::new(first_sound_done, move || {
+                store.mark_first_sound_done();
+            });
+            tray::spawn_watcher(app.handle().clone(), first_sound);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![get_status,
@@ -103,9 +139,10 @@ fn main() {
             preview_sound
         ])
         .on_window_event(|window, event| {
-            // 「閉じる」操作はトレイ格納ではなく、プロセスごと終了する方針。
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                window.app_handle().exit(0);
+            // 窓を閉じても終了せず、隠して常駐を続ける（Mac は Dock からも外す）。
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                tray::hide_main_window(window.app_handle());
             }
         })
         .run(tauri::generate_context!())
