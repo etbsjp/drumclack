@@ -76,6 +76,22 @@ impl Kit {
         self.sounds.iter().position(|(n, _)| n == name)
     }
 
+    /// キットの音の数。
+    pub fn sound_count(&self) -> usize {
+        self.sounds.len()
+    }
+
+    /// 音の変種の数。キットに無い番号は 0。
+    pub fn variant_count(&self, index: usize) -> usize {
+        self.sound(index).map_or(0, |s| s.variants.len())
+    }
+
+    /// 音の全変種の波形バッファの合計サイズ（バイト）。メモリ増加の計測用。
+    #[cfg(test)]
+    pub fn buffer_bytes(&self, index: usize) -> usize {
+        self.sound(index).map_or(0, |s| s.variants.iter().map(|v| v.len() * std::mem::size_of::<f32>()).sum())
+    }
+
     fn sound(&self, index: usize) -> Option<&Sound> {
         self.sounds.get(index).map(|(_, s)| s)
     }

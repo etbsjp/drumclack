@@ -62,3 +62,17 @@ jobs:
           name: ${{ matrix.artifact_label }}
           path: ${{ matrix.artifact_path }}
           if-no-files-found: error
+
+      # 無料キット8音×4変種=32個の WAV を書き出す（音声デバイス不要）。
+      # 人がこの WAV を聞いて、各音の聞こえ方・割れやプツッという音の有無・変種の違いを確かめる。
+      - name: Export drum sound WAVs
+        run: cargo test --manifest-path src-tauri/Cargo.toml --release -- --ignored export_wavs
+        env:
+          DRUMCLACK_WAV_DIR: ${{ github.workspace }}/wav-out
+
+      - name: Upload drum sound WAVs
+        uses: actions/upload-artifact@v4
+        with:
+          name: drum-wavs-${{ matrix.artifact_label }}
+          path: wav-out/*.wav
+          if-no-files-found: error

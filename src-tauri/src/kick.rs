@@ -52,6 +52,13 @@ const KICK_PARAMS: KickParams = KickParams {
 /// clampではなく**乗算でスケールする**ことで実現する（後述）。
 pub const PEAK_AMPLITUDE: f32 = 0.9;
 
+/// 末尾フェードの長さ（秒）。フェードが最低音の1周期より十分長いかを確かめるテストが参照する。
+#[cfg(test)]
+pub const FADE_OUT_SEC: f32 = KICK_PARAMS.fade_out_sec;
+/// 最も低い周波数（Hz）。同上。
+#[cfg(test)]
+pub const LOWEST_FREQ_HZ: f32 = KICK_PARAMS.end_freq_hz;
+
 /// 指定サンプルレートでキック1音分のモノラル波形（f32、-1.0〜1.0）を合成する。
 ///
 /// - ピッチは `start_freq_hz` から `end_freq_hz` へ指数的に減衰する。
@@ -64,7 +71,15 @@ pub const PEAK_AMPLITUDE: f32 = 0.9;
 /// - 末尾は `fade_out_sec` でなめらかにフェードアウトさせる。`duration_sec`
 ///   で単純に打ち切ると、その時点でまだ振幅が残っているため後続の無音との間に
 ///   不自然な段差（「プツッ」というクリック音）が生じていた（issue #6 原因B）。
+#[cfg(test)]
 pub fn synthesize_kick(sample_rate: u32) -> Vec<f32> {
+    synthesize_kick_variant(sample_rate, 1.0, 1.0)
+}
+
+/// 変種用に、高さ（`pitch_scale`）と音量の減衰時間（`decay_scale`）を倍率で振ったキック。
+/// どちらも 1.0 なら [`synthesize_kick`] と同じ波形。音の長さとフェードは変えない
+/// （どの変種も同じ長さで、末尾が同じ位置で 0 に収束する）。
+pub fn synthesize_kick_variant(sample_rate: u32, pitch_scale: f32, decay_scale: f32) -> Vec<f32> {
     let p = &KICK_PARAMS;
     let sample_count = ((p.duration_sec * sample_rate as f32).ceil() as usize).max(1);
     let mut samples = Vec::with_capacity(sample_count);
@@ -77,11 +92,11 @@ pub fn synthesize_kick(sample_rate: u32) -> Vec<f32> {
         let t = i as f32 * dt;
 
         // ピッチの指数減衰: start から end へ収束する。
-        let freq =
-            p.end_freq_hz + (p.start_freq_hz - p.end_freq_hz) * (-t / p.pitch_decay_sec).exp();
+        let freq = (p.end_freq_hz + (p.start_freq_hz - p.end_freq_hz) * (-t / p.pitch_decay_sec).exp())
+            * pitch_scale;
 
         // 音量の指数減衰。
-        let amp = (-t / p.amp_decay_sec).exp();
+        let amp = (-t / (p.amp_decay_sec * decay_scale)).exp();
 
         // 末尾のフェードアウト: 残り時間が fade_out_sec を下回ったら
         // 1.0 から 0.0 へ収束させる（それより前は 1.0 で無効化）。
