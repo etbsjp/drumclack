@@ -145,6 +145,7 @@ impl Default for Settings {
 impl Settings {
     /// 設定の JSON 文字列を読む。JSON として読めない・最上位がオブジェクトでないときは `None`
     /// （呼び出し側が「壊れている」として扱う）。
+    #[cfg(test)]
     pub fn from_json_str(text: &str) -> Option<Self> {
         let value: Value = serde_json::from_str(text).ok()?;
         Self::from_value(&value)

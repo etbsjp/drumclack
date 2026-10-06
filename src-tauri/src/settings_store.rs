@@ -12,49 +12,80 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::audio::AudioEngine;
-use crate::settings::Settings;
+use crate::settings::{Settings, SETTINGS_VERSION};
 
 pub const SETTINGS_FILE_NAME: &str = "settings.json";
 pub const BROKEN_FILE_NAME: &str = "settings.broken.json";
 const TEMP_FILE_NAME: &str = "settings.json.tmp";
 
+const BROKEN_PREVIOUS_FILE_NAME: &str = "settings.broken.json.1";
+
 /// 設定ファイルを読んだ結果。
 #[derive(Debug, PartialEq)]
 pub struct LoadOutcome {
     pub settings: Settings,
-    /// 読めないファイルを `settings.broken.json` へ退避して、既定で起動したか。
+    /// 壊れたファイルを `settings.broken.json` へ退避して、既定で起動したか（退避が成功したときだけ true）。
     pub recovered_from_broken: bool,
+    /// 元のファイルを残せていないため、保存してはいけない状態か（読み取りの IO エラー、退避の失敗）。
+    pub save_blocked: bool,
+    /// このアプリより新しい版のファイルを読んだときの、その版。初回の保存前に元ファイルを残す。
+    pub future_version: Option<u32>,
 }
 
-/// 起動時に設定を読む。ファイルが無ければ既定。読めなければ退避して既定。
+impl LoadOutcome {
+    fn defaults() -> Self {
+        Self { settings: Settings::default(), recovered_from_broken: false, save_blocked: false, future_version: None }
+    }
+}
+
+/// 起動時に設定を読む。ファイルが無ければ既定。壊れていれば退避して既定。
+/// 壊れているのではなく読めないだけ（権限など）のときは、退避せず既定で動き、保存を止める。
 pub fn load(dir: &Path) -> LoadOutcome {
     let path = dir.join(SETTINGS_FILE_NAME);
 
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return LoadOutcome { settings: Settings::default(), recovered_from_broken: false };
-        }
-        // 権限などで読めない場合も、壊れているものと同じ扱いにする。
-        Err(_) => return recover_from_broken(dir),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return LoadOutcome::defaults(),
+        Err(_) => return LoadOutcome { save_blocked: true, ..LoadOutcome::defaults() },
     };
 
-    let parsed = String::from_utf8(bytes).ok().and_then(|text| Settings::from_json_str(&text));
+    let parsed = String::from_utf8(bytes).ok().and_then(|text| {
+        let value: Value = serde_json::from_str(&text).ok()?;
+        let settings = Settings::from_value(&value)?;
+        let version = value.get("version").and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok());
+        Some((settings, version))
+    });
     match parsed {
-        Some(settings) => LoadOutcome { settings, recovered_from_broken: false },
+        Some((settings, version)) => LoadOutcome {
+            settings,
+            future_version: version.filter(|version| *version > SETTINGS_VERSION),
+            ..LoadOutcome::defaults()
+        },
         None => recover_from_broken(dir),
     }
 }
 
-/// 読めないファイルを退避して既定の設定を返す。退避先に既にあれば置き換える。
+/// 壊れたファイルを退避して既定の設定を返す。退避先に前の退避があれば、先に `.1` へ寄せる（世代は1つ）。
+/// 退避できなかったときは、元のファイルを残すため保存を止める。
 fn recover_from_broken(dir: &Path) -> LoadOutcome {
     let path = dir.join(SETTINGS_FILE_NAME);
     let broken_path = dir.join(BROKEN_FILE_NAME);
-    // 名前の付け替えができない環境では、コピーだけでも元の内容を残す。
-    if fs::rename(&path, &broken_path).is_err() {
-        let _ = fs::copy(&path, &broken_path);
-    }
-    LoadOutcome { settings: Settings::default(), recovered_from_broken: true }
+
+    let set_aside = (|| {
+        if broken_path.exists() {
+            fs::rename(&broken_path, dir.join(BROKEN_PREVIOUS_FILE_NAME))?;
+        }
+        // 名前の付け替えができない環境では、コピーだけでも元の内容を残す。
+        fs::rename(&path, &broken_path).or_else(|_| fs::copy(&path, &broken_path).map(|_| ()))
+    })();
+
+    let succeeded = set_aside.is_ok();
+    LoadOutcome { recovered_from_broken: succeeded, save_blocked: !succeeded, ..LoadOutcome::defaults() }
+}
+
+/// 新しい版のファイルを、書き換える前に `settings.v{n}.json` へ残す。
+fn keep_future_version(dir: &Path, version: u32) -> io::Result<()> {
+    fs::copy(dir.join(SETTINGS_FILE_NAME), dir.join(format!("settings.v{version}.json"))).map(|_| ())
 }
 
 /// 設定を保存する（別名で書いてから置き換える）。保存先のフォルダが無ければ作る。
@@ -103,6 +134,8 @@ pub struct SettingsSnapshot {
 struct Current {
     settings: Settings,
     save_failed: bool,
+    /// 初回の保存前に元ファイルを残す、新しい版の番号。残せたら `None` に戻す。
+    future_version_to_keep: Option<u32>,
 }
 
 /// 現在の設定を持ち、更新を保存と音量へ反映する。
@@ -111,6 +144,8 @@ pub struct SettingsStore {
     dir: Option<PathBuf>,
     engine: Option<Arc<AudioEngine>>,
     recovered_from_broken: bool,
+    /// 元のファイルを残せていないため、この起動中は保存しない。
+    save_blocked: bool,
     current: Mutex<Current>,
 }
 
@@ -119,13 +154,18 @@ impl SettingsStore {
     pub fn open(dir: Option<PathBuf>, engine: Option<Arc<AudioEngine>>) -> Self {
         let outcome = match &dir {
             Some(dir) => load(dir),
-            None => LoadOutcome { settings: Settings::default(), recovered_from_broken: false },
+            None => LoadOutcome::defaults(),
         };
         let store = Self {
             dir,
             engine,
             recovered_from_broken: outcome.recovered_from_broken,
-            current: Mutex::new(Current { settings: outcome.settings, save_failed: false }),
+            save_blocked: outcome.save_blocked,
+            current: Mutex::new(Current {
+                settings: outcome.settings,
+                save_failed: outcome.save_blocked,
+                future_version_to_keep: outcome.future_version,
+            }),
         };
         store.apply_to_engine(&store.lock().settings);
         store
@@ -163,7 +203,18 @@ impl SettingsStore {
         let mut current = self.lock();
         self.apply_to_engine(&settings);
         current.save_failed = match &self.dir {
-            Some(dir) => save(dir, &settings).is_err(),
+            Some(_) if self.save_blocked => true,
+            Some(dir) => {
+                // 新しい版のファイルは、初めて書き換える前に残す。残せなければ保存しない。
+                let kept = match current.future_version_to_keep {
+                    Some(version) => keep_future_version(dir, version).is_ok(),
+                    None => true,
+                };
+                if kept {
+                    current.future_version_to_keep = None;
+                }
+                !kept || save(dir, &settings).is_err()
+            }
             None => true,
         };
         current.settings = settings;
@@ -215,7 +266,7 @@ mod tests {
     fn missing_file_starts_with_defaults_without_a_broken_notice() {
         let dir = TempDir::new();
         let outcome = load(dir.path());
-        assert_eq!(outcome, LoadOutcome { settings: Settings::default(), recovered_from_broken: false });
+        assert_eq!(outcome, LoadOutcome::defaults());
         assert!(!dir.path().join(BROKEN_FILE_NAME).exists());
     }
 
@@ -395,6 +446,102 @@ mod tests {
         assert_eq!(snapshot.settings, Settings::default());
         // 画面へ渡す JSON にも出る。
         assert_eq!(serde_json::to_value(&snapshot).unwrap()["recovered_from_broken"], json!(true));
+    }
+
+    #[test]
+    fn when_setting_aside_fails_the_original_is_kept_and_saving_stops() {
+        let dir = TempDir::new();
+        let original = b"{ broken but precious";
+        fs::write(dir.path().join(SETTINGS_FILE_NAME), original).unwrap();
+        // 前の退避があり、それを寄せる先（.1）が中身のあるフォルダで塞がっている。
+        fs::write(dir.path().join(BROKEN_FILE_NAME), b"older").unwrap();
+        let blocker = dir.path().join(BROKEN_PREVIOUS_FILE_NAME);
+        fs::create_dir_all(&blocker).unwrap();
+        fs::write(blocker.join("x"), b"x").unwrap();
+
+        let outcome = load(dir.path());
+        assert!(!outcome.recovered_from_broken, "退避できていないのに退避したことにしない");
+        assert!(outcome.save_blocked);
+
+        let store = SettingsStore::open(Some(dir.path().to_path_buf()), None);
+        let snapshot = store.update(&json!({"volume": 0.4})).unwrap();
+        assert!(snapshot.save_failed);
+        assert_eq!(snapshot.settings.volume, 0.4);
+        assert_eq!(fs::read(dir.path().join(SETTINGS_FILE_NAME)).unwrap(), original, "元のファイルを上書きしない");
+        assert_eq!(fs::read(dir.path().join(BROKEN_FILE_NAME)).unwrap(), b"older");
+    }
+
+    #[test]
+    fn unreadable_file_is_not_set_aside_and_saving_stops() {
+        let dir = TempDir::new();
+        // 読もうとするとエラーになる（ファイルの位置にフォルダがある）。壊れた中身ではない。
+        let path = dir.path().join(SETTINGS_FILE_NAME);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("inside"), b"keep me").unwrap();
+
+        let outcome = load(dir.path());
+        assert_eq!(outcome.settings, Settings::default());
+        assert!(!outcome.recovered_from_broken);
+        assert!(outcome.save_blocked);
+        assert!(!dir.path().join(BROKEN_FILE_NAME).exists(), "退避していない");
+        assert!(path.join("inside").exists());
+
+        let store = SettingsStore::open(Some(dir.path().to_path_buf()), None);
+        assert!(store.get().save_failed);
+        assert!(store.update(&json!({"volume": 0.4})).unwrap().save_failed);
+        assert!(path.is_dir(), "保存で置き換えていない");
+    }
+
+    #[test]
+    fn newer_version_file_is_copied_aside_before_the_first_save() {
+        let dir = TempDir::new();
+        let original = br#"{"version": 2, "volume": 0.3, "from_the_future": {"a": 1}}"#;
+        fs::write(dir.path().join(SETTINGS_FILE_NAME), original).unwrap();
+        let store = SettingsStore::open(Some(dir.path().to_path_buf()), None);
+        assert_eq!(store.get().settings.volume, 0.3);
+        assert!(!store.get().recovered_from_broken);
+
+        let snapshot = store.update(&json!({"volume": 0.6})).unwrap();
+
+        assert!(!snapshot.save_failed);
+        assert_eq!(fs::read(dir.path().join("settings.v2.json")).unwrap(), original);
+        let rewritten: Value =
+            serde_json::from_slice(&fs::read(dir.path().join(SETTINGS_FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(rewritten["version"], json!(1));
+
+        // 2回目以降の保存で、残したコピーを上書きしない。
+        store.update(&json!({"volume": 0.7})).unwrap();
+        assert_eq!(fs::read(dir.path().join("settings.v2.json")).unwrap(), original);
+    }
+
+    #[test]
+    fn newer_version_file_is_not_overwritten_when_the_copy_fails() {
+        let dir = TempDir::new();
+        let original = br#"{"version": 3, "volume": 0.3}"#;
+        fs::write(dir.path().join(SETTINGS_FILE_NAME), original).unwrap();
+        // コピー先がフォルダで塞がっている。
+        fs::create_dir_all(dir.path().join("settings.v3.json")).unwrap();
+        let store = SettingsStore::open(Some(dir.path().to_path_buf()), None);
+
+        let snapshot = store.update(&json!({"volume": 0.6})).unwrap();
+
+        assert!(snapshot.save_failed);
+        assert_eq!(fs::read(dir.path().join(SETTINGS_FILE_NAME)).unwrap(), original);
+    }
+
+    #[test]
+    fn previous_broken_file_is_kept_as_dot_one() {
+        let dir = TempDir::new();
+        fs::write(dir.path().join(SETTINGS_FILE_NAME), b"{ first broken").unwrap();
+        assert!(load(dir.path()).recovered_from_broken);
+        fs::write(dir.path().join(SETTINGS_FILE_NAME), b"{ second broken").unwrap();
+
+        let outcome = load(dir.path());
+
+        assert!(outcome.recovered_from_broken);
+        assert!(!outcome.save_blocked);
+        assert_eq!(fs::read(dir.path().join(BROKEN_FILE_NAME)).unwrap(), b"{ second broken");
+        assert_eq!(fs::read(dir.path().join(BROKEN_PREVIOUS_FILE_NAME)).unwrap(), b"{ first broken");
     }
 
     #[test]
