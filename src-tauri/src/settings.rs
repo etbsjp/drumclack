@@ -153,33 +153,43 @@ impl Settings {
 
     /// 寛容に読む。知らない項目・音の名前・キーの名前は無視してその項目だけ既定にし、
     /// 範囲外の数値は丸める。最上位がオブジェクトでなければ `None`。
+    /// 既定の設定に `value` を重ねたものと同じ（読み取りと更新で規則を分けない）。
     pub fn from_value(value: &Value) -> Option<Self> {
-        let root = value.as_object()?;
-        let defaults = Self::default();
+        Self::default().merged(value)
+    }
+
+    /// 今の設定に、送られた項目だけを重ねた新しい設定を返す。送られなかった項目は今の値のまま。
+    /// 最上位がオブジェクトでなければ `None`。
+    ///
+    /// - 値の型が違う・知らない名前・範囲外の数値は、その項目だけ「今の値のまま」（数値は端へ丸める）。
+    /// - 割り当て（`typing` / `play` の `groups` / `keys`）は項目単位で重ねる。値が `null` なら、
+    ///   その項目の上書きを消す（グループに従う・既定に戻す）。
+    /// - `version` は送られても無視する（書き出すのはこの版の形式）。
+    pub fn merged(&self, patch: &Value) -> Option<Self> {
+        let root = patch.as_object()?;
 
         let kit = root
             .get("kit")
             .and_then(Value::as_str)
             .filter(|name| KNOWN_KITS.contains(name))
             .map(str::to_string)
-            .unwrap_or(defaults.kit);
+            .unwrap_or_else(|| self.kit.clone());
 
         Some(Self {
-            // 未来の版のファイルも読むが、書き出すのはこの版の形式。
             version: SETTINGS_VERSION,
             kit,
-            enabled: read_bool(root.get("enabled"), defaults.enabled),
-            volume: read_unit_range(root.get("volume"), defaults.volume),
-            dynamics: read_unit_range(root.get("dynamics"), defaults.dynamics),
-            language: read_name(root.get("language"), Language::from_name, defaults.language),
+            enabled: read_bool(root.get("enabled"), self.enabled),
+            volume: read_unit_range(root.get("volume"), self.volume),
+            dynamics: read_unit_range(root.get("dynamics"), self.dynamics),
+            language: read_name(root.get("language"), Language::from_name, self.language),
             keyboard_layout: read_name(
                 root.get("keyboard_layout"),
                 KeyboardLayout::from_name,
-                defaults.keyboard_layout,
+                self.keyboard_layout,
             ),
-            first_sound_done: read_bool(root.get("first_sound_done"), defaults.first_sound_done),
-            typing: read_assignments(root.get("typing")),
-            play: read_assignments(root.get("play")),
+            first_sound_done: read_bool(root.get("first_sound_done"), self.first_sound_done),
+            typing: self.typing.merged(root.get("typing")),
+            play: self.play.merged(root.get("play")),
         })
     }
 
@@ -207,33 +217,43 @@ fn read_name<T>(value: Option<&Value>, parse: fn(&str) -> Option<T>, default: T)
     value.and_then(Value::as_str).and_then(parse).unwrap_or(default)
 }
 
-fn read_assignments(value: Option<&Value>) -> Assignments {
-    let mut assignments = Assignments::default();
-    let Some(section) = value.and_then(Value::as_object) else {
-        return assignments;
-    };
+impl Assignments {
+    /// 送られた割り当てを項目単位で重ねる（`Settings::merged` から呼ぶ）。
+    /// 値が `null` の項目は上書きを消す。知らないグループ名・キー名・音の名前の項目は無視する。
+    fn merged(&self, patch: Option<&Value>) -> Assignments {
+        let mut merged = self.clone();
+        let Some(section) = patch.and_then(Value::as_object) else {
+            return merged;
+        };
 
-    if let Some(groups) = section.get("groups").and_then(Value::as_object) {
-        for (group_name, sound_name) in groups {
-            // グループ名か音の名前のどちらかが知らないものなら、その項目だけ捨てる。
-            let group = KeyGroup::from_name(group_name);
-            let sound = sound_name.as_str().and_then(Sound::from_name);
-            if let (Some(group), Some(sound)) = (group, sound) {
-                assignments.groups.insert(group, sound);
+        if let Some(groups) = section.get("groups").and_then(Value::as_object) {
+            for (group_name, sound_name) in groups {
+                let Some(group) = KeyGroup::from_name(group_name) else {
+                    continue;
+                };
+                if sound_name.is_null() {
+                    merged.groups.remove(&group);
+                } else if let Some(sound) = sound_name.as_str().and_then(Sound::from_name) {
+                    merged.groups.insert(group, sound);
+                }
             }
         }
-    }
 
-    if let Some(keys) = section.get("keys").and_then(Value::as_object) {
-        for (code_name, sound_name) in keys {
-            let sound = sound_name.as_str().and_then(Sound::from_name);
-            if let (true, Some(sound)) = (key_position::is_known_code_name(code_name), sound) {
-                assignments.keys.insert(code_name.clone(), sound);
+        if let Some(keys) = section.get("keys").and_then(Value::as_object) {
+            for (code_name, sound_name) in keys {
+                if !key_position::is_known_code_name(code_name) {
+                    continue;
+                }
+                if sound_name.is_null() {
+                    merged.keys.remove(code_name);
+                } else if let Some(sound) = sound_name.as_str().and_then(Sound::from_name) {
+                    merged.keys.insert(code_name.clone(), sound);
+                }
             }
         }
-    }
 
-    assignments
+        merged
+    }
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //!
 //! この型には意図的に `Debug` / `Display` / `Serialize` を持たせない。キーの位置を
 //! ログ・画面・ファイルへ出せないようにするためで、音の名前へ変換する1か所
-//! （`keyboard::sound_name_for`）の外へ出してはならない。
+//! （`assignment::AssignmentTable::sound_for`）の外へ出してはならない。
 //! 下の静的検査（`assert_not_implemented!`）が、これらを実装した時点でコンパイルを落とす。
 
 macro_rules! key_positions {
@@ -14,11 +14,23 @@ macro_rules! key_positions {
             $($name),*
         }
 
-        /// 設定ファイルに書かれた名前が、知っているキーの名前か。文字列から真偽を返すだけで、
-        /// 位置から文字列へ直す経路ではない。
+        impl KeyPosition {
+            /// すべてのキーの位置（宣言順。`position as usize` がこの並びの番号になる）。
+            pub const ALL: &'static [KeyPosition] = &[$(KeyPosition::$name),*];
+
+            /// 設定ファイルに書かれた `code` 名から位置を引く。文字列→位置の一方向だけで、
+            /// 位置から文字列へ直す経路ではない。
+            pub fn from_code_name(name: &str) -> Option<KeyPosition> {
+                match name {
+                    $(stringify!($name) => Some(KeyPosition::$name),)*
+                    _ => None,
+                }
+            }
+        }
+
+        /// 設定ファイルに書かれた名前が、知っているキーの名前か。
         pub fn is_known_code_name(name: &str) -> bool {
-            const NAMES: &[&str] = &[$(stringify!($name)),*];
-            NAMES.contains(&name)
+            KeyPosition::from_code_name(name).is_some()
         }
 
         // テスト専用。製品ビルドには「位置→文字列」の経路を作らない。

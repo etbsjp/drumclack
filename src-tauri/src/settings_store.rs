@@ -1,7 +1,7 @@
 //! 設定ファイルの読み書きと、画面へ公開する設定の取得・更新。
 //!
 //! 保存先は OS 標準の設定フォルダ（呼び出し側が決めて渡す）。読み書きは Rust 側が正本で、
-//! 画面から呼べるのは `get_settings` と `update_settings` の2つだけ（`main.rs`）。
+//! 画面から設定に触れるのは `get_settings` と `update_settings`（差分の更新）だけ（`main.rs`）。
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::assignment::LiveAssignments;
 use crate::audio::AudioEngine;
 use crate::settings::{Settings, SETTINGS_VERSION};
 
@@ -165,6 +166,8 @@ pub struct SettingsStore {
     /// 保存先のフォルダ。設定フォルダが分からないときは `None`（保存せず、この起動中だけ動く）。
     dir: Option<PathBuf>,
     engine: Option<Arc<AudioEngine>>,
+    /// キー監視が読む、今の割り当てとオン／オフ。設定が変わるたびに差し替える。
+    assignments: Arc<LiveAssignments>,
     recovered_from_broken: bool,
     /// 元のファイルを残せていないため、この起動中は保存しない。
     save_blocked: bool,
@@ -172,8 +175,19 @@ pub struct SettingsStore {
 }
 
 impl SettingsStore {
-    /// 設定を読み込み、音量を鳴らす側へ反映して起動する。
+    /// 設定を読み込み、音量・割り当て・オン／オフを鳴らす側へ反映して起動する。
+    /// キー監視が読む割り当ては、この store が持つもの（`open_with` で外から渡すこともできる）。
+    #[cfg(test)]
     pub fn open(dir: Option<PathBuf>, engine: Option<Arc<AudioEngine>>) -> Self {
+        Self::open_with(dir, engine, Arc::new(LiveAssignments::new()))
+    }
+
+    /// `open` と同じで、反映先の割り当て（キー監視が読むもの）を渡す。
+    pub fn open_with(
+        dir: Option<PathBuf>,
+        engine: Option<Arc<AudioEngine>>,
+        assignments: Arc<LiveAssignments>,
+    ) -> Self {
         let outcome = match &dir {
             Some(dir) => load(dir),
             None => LoadOutcome::defaults(),
@@ -181,6 +195,7 @@ impl SettingsStore {
         let store = Self {
             dir,
             engine,
+            assignments,
             recovered_from_broken: outcome.recovered_from_broken,
             save_blocked: outcome.save_blocked,
             current: Mutex::new(Current {
@@ -202,6 +217,7 @@ impl SettingsStore {
         if let Some(engine) = &self.engine {
             engine.set_master_volume(settings.volume);
         }
+        self.assignments.apply(settings);
     }
 
     fn snapshot(&self, current: &Current) -> SettingsSnapshot {
@@ -217,12 +233,17 @@ impl SettingsStore {
         self.snapshot(&current)
     }
 
-    /// 画面から届いた設定で置き換える。範囲外の値や知らない項目は読み取りと同じ規則で整え、
-    /// 即時に保存して、鳴らす側へ反映する。整えた結果を返す。
-    pub fn update(&self, requested: &Value) -> Result<SettingsSnapshot, String> {
-        let settings = Settings::from_value(requested).ok_or("設定の形式が正しくありません")?;
-
+    /// 画面から届いた差分を今の設定に重ねる。送られた項目だけを変え、送られなかった項目は今の値のまま。
+    /// 割り当ては項目単位で重ね、値が `null` の項目は上書きを消す（`Settings::merged`）。
+    /// 範囲外の値や知らない項目は読み取りと同じ規則で整え、即時に保存して、鳴らす側へ反映する。
+    /// 整えた設定全体を返す。
+    ///
+    /// 差分の重ねも保存も、設定のロックを持ったまま行う。画面とRust側の更新が重なっても、
+    /// 片方が他方の変更を巻き戻さない。
+    pub fn update(&self, patch: &Value) -> Result<SettingsSnapshot, String> {
         let mut current = self.lock();
+        let settings = current.settings.merged(patch).ok_or("設定の形式が正しくありません")?;
+
         self.apply_to_engine(&settings);
         current.save_failed = match &self.dir {
             Some(_) if self.save_blocked => true,
@@ -241,6 +262,21 @@ impl SettingsStore {
         };
         current.settings = settings;
         Ok(self.snapshot(&current))
+    }
+
+    /// Rust 側（メニューのオン／オフなど）から、オン／オフを変える。画面の更新と同じ差分の経路を通る。
+    // 呼び出し元（メニュー）は後の issue（#17）。それまで本体からは呼ばれない。
+    #[allow(dead_code)]
+    pub fn set_enabled(&self, enabled: bool) -> SettingsSnapshot {
+        self.update(&serde_json::json!({ "enabled": enabled })).expect("オブジェクトの差分は必ず重ねられる")
+    }
+
+    /// Rust 側から「初めて音が鳴った」印を付ける。画面の更新と同じ差分の経路を通る。
+    // 呼び出し元は後の issue（#17）。それまで本体からは呼ばれない。
+    #[allow(dead_code)]
+    pub fn mark_first_sound_done(&self) -> SettingsSnapshot {
+        self.update(&serde_json::json!({ "first_sound_done": true }))
+            .expect("オブジェクトの差分は必ず重ねられる")
     }
 }
 
@@ -602,15 +638,148 @@ mod tests {
     }
 
     #[test]
-    fn screen_can_call_only_the_three_listed_commands() {
+    fn screen_can_call_only_the_four_listed_commands() {
         // 画面から呼べる命令の一覧（権限）を、増減したらここが落ちるようにする。
         let capability: Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         let mut permissions: Vec<&str> =
             capability["permissions"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()).collect();
         permissions.sort_unstable();
-        assert_eq!(permissions, ["allow-get-settings", "allow-get-status", "allow-update-settings"]);
+        assert_eq!(
+            permissions,
+            ["allow-get-settings", "allow-get-status", "allow-preview-sound", "allow-update-settings"]
+        );
 
-        let build_script = include_str!("../build.rs");
-        assert!(build_script.contains(r#"&["get_status", "get_settings", "update_settings"]"#));
+        // build.rs の命令の一覧（空白・改行を除いて比べる）。
+        let build_script: String =
+            include_str!("../build.rs").chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(build_script.contains(r#".commands(&["get_status","get_settings","update_settings","preview_sound",])"#));
+    }
+
+    #[test]
+    fn volume_only_update_leaves_every_other_item_as_it_was() {
+        let dir = TempDir::new();
+        // 音量以外をすべて既定から変えておく（割り当て・言語・オン／オフ・配列・印）。
+        fs::write(dir.path().join(SETTINGS_FILE_NAME), SAMPLE_JSON).unwrap();
+        let store = SettingsStore::open(Some(dir.path().to_path_buf()), Some(test_engine()));
+        let before = store.get().settings;
+        assert!(!before.enabled && before.first_sound_done);
+        assert_ne!(before.typing, Settings::default().typing);
+
+        let snapshot = store.update(&json!({"volume": 0.3})).unwrap();
+
+        let after = snapshot.settings;
+        assert_eq!(after.volume, 0.3);
+        assert_eq!(Settings { volume: before.volume, ..after.clone() }, before, "音量以外は変わらない");
+        // 保存されたファイルも同じ。
+        assert_eq!(SettingsStore::open(Some(dir.path().to_path_buf()), None).get().settings, after);
+    }
+
+    #[test]
+    fn partial_updates_do_not_reset_the_items_they_do_not_mention() {
+        let store = SettingsStore::open(None, None);
+        store.update(&json!({"language": "en", "dynamics": 0.2, "keyboard_layout": "us"})).unwrap();
+        store.update(&json!({"typing": {"keys": {"KeyJ": "kick"}}})).unwrap();
+
+        let snapshot = store.update(&json!({"volume": 0.1, "play": {"groups": {"letters": "clap"}}})).unwrap();
+
+        let settings = snapshot.settings;
+        assert_eq!(settings.language, crate::settings::Language::En);
+        assert_eq!(settings.dynamics, 0.2);
+        assert_eq!(settings.keyboard_layout, crate::settings::KeyboardLayout::Us);
+        assert_eq!(settings.typing.keys["KeyJ"], Sound::Kick);
+        assert_eq!(settings.play.groups[&KeyGroup::Letters], Sound::Clap);
+    }
+
+    #[test]
+    fn wrong_typed_or_unknown_items_in_an_update_keep_the_current_value() {
+        let store = SettingsStore::open(None, None);
+        store.update(&json!({"volume": 0.3, "enabled": false, "language": "ja"})).unwrap();
+
+        let settings = store
+            .update(&json!({"volume": "loud", "enabled": 1, "language": "klingon", "kit": "nope", "mystery": 1}))
+            .unwrap()
+            .settings;
+
+        assert_eq!(settings.volume, 0.3);
+        assert!(!settings.enabled);
+        assert_eq!(settings.language, crate::settings::Language::Ja);
+        assert_eq!(settings.kit, crate::settings::DEFAULT_KIT);
+    }
+
+    #[test]
+    fn rust_side_changes_go_through_the_same_diff_and_are_not_undone_by_a_stale_full_copy() {
+        let dir = TempDir::new();
+        let store = SettingsStore::open(Some(dir.path().to_path_buf()), Some(test_engine()));
+        store.update(&json!({"language": "en", "typing": {"keys": {"KeyJ": "kick"}}})).unwrap();
+
+        // 画面が設定を読んだあとに、Rust 側がオフにして、初めて鳴った印を付ける。
+        store.set_enabled(false);
+        store.mark_first_sound_done();
+        assert!(!store.get().settings.enabled);
+        assert!(store.get().settings.first_sound_done);
+
+        // 画面は音量だけ変える。巻き戻らない。
+        let settings = store.update(&json!({"volume": 0.2})).unwrap().settings;
+        assert!(!settings.enabled);
+        assert!(settings.first_sound_done);
+        assert_eq!(settings.language, crate::settings::Language::En);
+        assert_eq!(settings.typing.keys["KeyJ"], Sound::Kick);
+
+        // Rust 側の変更も、画面の差分も、保存されている。
+        let reopened = SettingsStore::open(Some(dir.path().to_path_buf()), None).get().settings;
+        assert_eq!(reopened, settings);
+    }
+
+    #[test]
+    fn null_removes_only_that_override_for_groups_and_keys() {
+        let dir = TempDir::new();
+        let store = SettingsStore::open(Some(dir.path().to_path_buf()), None);
+        store
+            .update(&json!({
+                "typing": {
+                    "groups": {"letters": "snare", "space": "clap"},
+                    "keys": {"KeyJ": "kick", "KeyK": "rim", "Numpad5": "none"}
+                },
+                "play": {"keys": {"KeyJ": "tom_low"}}
+            }))
+            .unwrap();
+
+        let settings = store
+            .update(&json!({"typing": {"groups": {"letters": null}, "keys": {"KeyJ": null}}}))
+            .unwrap()
+            .settings;
+
+        assert_eq!(settings.typing.groups, std::collections::BTreeMap::from([(KeyGroup::Space, Sound::Clap)]));
+        assert_eq!(
+            settings.typing.keys,
+            std::collections::BTreeMap::from([("KeyK".to_string(), Sound::Rim), ("Numpad5".to_string(), Sound::None)])
+        );
+        assert_eq!(settings.play.keys["KeyJ"], Sound::TomLow, "演奏用の同名キーは別の組なので残る");
+
+        // 保存にも反映される。存在しない項目に null を送っても何も起きない。
+        let reopened = SettingsStore::open(Some(dir.path().to_path_buf()), None);
+        assert_eq!(reopened.get().settings, settings);
+        let unchanged = store.update(&json!({"typing": {"keys": {"KeyZ": null}, "groups": {"enter": null}}})).unwrap();
+        assert_eq!(unchanged.settings, settings);
+    }
+
+    #[test]
+    fn newer_version_copy_is_made_once_and_not_again_on_later_saves() {
+        let dir = TempDir::new();
+        let original = br#"{"version": 2, "volume": 0.3}"#;
+        fs::write(dir.path().join(SETTINGS_FILE_NAME), original).unwrap();
+        let store = SettingsStore::open(Some(dir.path().to_path_buf()), None);
+
+        for volume in [0.6, 0.7, 0.8, 0.9] {
+            assert!(!store.update(&json!({ "volume": volume })).unwrap().save_failed);
+        }
+
+        let mut files: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort_unstable();
+        assert_eq!(files, ["settings.json", "settings.v2.json"], "コピーは1つだけ（2回目以降は作らない）");
+        assert_eq!(fs::read(dir.path().join("settings.v2.json")).unwrap(), original);
     }
 }
