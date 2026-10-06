@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::assignment::LiveAssignments;
 use crate::audio::AudioEngine;
 use crate::permission;
 
@@ -28,6 +29,8 @@ pub struct AppState {
     pub audio_engine: Option<Arc<AudioEngine>>,
     /// `DRUMCLACK_TEST_DELAY_MS` の値（テスト用の遅延発音、測定の陽性対照）。
     pub test_delay_ms: Option<u64>,
+    /// キー監視が読む、今の割り当てとオン／オフ。設定の変更で差し替わる（`SettingsStore` が書く）。
+    pub assignments: Arc<LiveAssignments>,
 }
 
 impl AppState {
@@ -49,6 +52,7 @@ impl AppState {
             audio_init,
             audio_engine,
             test_delay_ms,
+            assignments: Arc::new(LiveAssignments::new()),
         }
     }
 

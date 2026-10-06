@@ -135,6 +135,12 @@ impl AudioEngine {
         }
     }
 
+    /// テスト用: 積まれている発音の要求をすべて取り出す（本来の読み手は音声コールバックだけ）。
+    #[cfg(test)]
+    pub fn drain_requests_for_test(&self) -> Vec<crate::voices::PlayRequest> {
+        std::iter::from_fn(|| self.requests.pop()).collect()
+    }
+
     pub fn master_volume(&self) -> f32 {
         f32::from_bits(self.master_volume_bits.load(Ordering::Relaxed))
     }

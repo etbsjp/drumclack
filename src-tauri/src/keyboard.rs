@@ -17,14 +17,14 @@
 //!   イベントも握りつぶさない。
 //!
 //! キーの位置は音を選ぶことにだけ使い、保存も記録もしない。位置を表す型
-//! （[`KeyPosition`]）は表示・ログ出力・保存の機能を持たず、[`sound_name_for`] の外へ出さない。
+//! （[`KeyPosition`]）は表示・ログ出力・保存の機能を持たず、音の名前へ変換する1か所
+//! （`assignment::AssignmentTable::sound_for`）の外へ出さない。
 
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use crate::audio::AudioEngine;
-use crate::key_position::KeyPosition;
 use crate::key_tracker::{KeyEvent, KeyTracker};
 use crate::state::AppState;
 
@@ -43,14 +43,10 @@ pub fn spawn_listener(engine: Arc<AudioEngine>, state: Arc<AppState>) {
     }
 }
 
-/// キーの位置を音の名前に変える、唯一の場所。キーの位置はここで使い切る。
-///
-/// この issue ではどのキーでもキックのまま。割り当て（グループ・個別の上書き）は後続の issue で入れる。
-fn sound_name_for(_position: KeyPosition) -> &'static str {
-    "kick"
-}
-
 /// 監視から届いたイベントを状態機械に通し、新しく押されたときだけ発音を試みる。
+///
+/// キーの位置は、ここで `state.assignments`（割り当ての検索と、オン／オフ・無音の判定）に渡して
+/// 音の名前にし、使い切る。オフのときや無音のキーのときは、発音を要求しない。
 fn dispatch(
     tracker: &mut KeyTracker,
     event: KeyEvent,
@@ -58,7 +54,9 @@ fn dispatch(
     state: &Arc<AppState>,
 ) {
     if let Some(position) = tracker.handle(event) {
-        handle_key_down(engine.clone(), state.clone(), sound_name_for(position));
+        if let Some(sound_name) = state.assignments.sound_name_for_key(position) {
+            handle_key_down(engine.clone(), state.clone(), sound_name);
+        }
     }
 }
 
@@ -486,5 +484,192 @@ mod windows_hook {
             let mut msg: Msg = unsafe { std::mem::zeroed() };
             while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {}
         });
+    }
+}
+
+/// キーの位置から発音の要求まで（状態機械 → 割り当て → 待ち行列）を通して確かめるテスト。
+/// OS のフックは通さない（`dispatch` から先は両 OS 共通）。
+#[cfg(test)]
+mod dispatch_tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::dispatch;
+    use crate::assignment;
+    use crate::audio::AudioEngine;
+    use crate::drums::build_free_kit;
+    use crate::key_position::KeyPosition;
+    use crate::key_tracker::{KeyEvent, KeyTracker};
+    use crate::settings_store::{SettingsStore, SETTINGS_FILE_NAME};
+    use crate::state::{AppState, AudioInitStatus};
+
+    const SR: u32 = 48_000;
+
+    struct Rig {
+        engine: Arc<AudioEngine>,
+        state: Arc<AppState>,
+        store: SettingsStore,
+        tracker: KeyTracker,
+    }
+
+    impl Rig {
+        fn new(dir: Option<PathBuf>) -> Self {
+            let engine = Arc::new(AudioEngine::new(build_free_kit(SR), SR));
+            let state = Arc::new(AppState::new(AudioInitStatus::Ok { sample_rate: SR }, Some(engine.clone())));
+            let store = SettingsStore::open_with(dir, Some(engine.clone()), state.assignments.clone());
+            Self { engine, state, store, tracker: KeyTracker::new() }
+        }
+
+        /// 押して離す。積まれた発音の要求を、鳴らす音の名前の列で返す。
+        fn tap(&mut self, position: KeyPosition) -> Vec<&'static str> {
+            dispatch(&mut self.tracker, KeyEvent::Down { position, autorepeat: false }, &self.engine, &self.state);
+            dispatch(&mut self.tracker, KeyEvent::Up { position }, &self.engine, &self.state);
+            self.drain_names()
+        }
+
+        fn drain_names(&self) -> Vec<&'static str> {
+            let kit = build_free_kit(SR);
+            self.engine
+                .drain_requests_for_test()
+                .into_iter()
+                .map(|request| {
+                    crate::settings::Sound::ALL
+                        .iter()
+                        .find(|sound| kit.index_of(sound.name()) == Some(usize::from(request.sound)))
+                        .expect("鳴った音はキットの8音のどれか")
+                        .name()
+                })
+                .collect()
+        }
+
+        fn tap_named(&mut self, name: &str) -> Vec<&'static str> {
+            self.tap(KeyPosition::from_code_name(name).expect("キー名"))
+        }
+    }
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "drumclack-keyboard-test-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn default_assignment_plays_the_designed_sound_once_per_key() {
+        let mut rig = Rig::new(None);
+        let cases = [
+            ("KeyA", "hat_closed"),
+            ("Space", "kick"),
+            ("Enter", "snare"),
+            ("NumpadEnter", "snare"),
+            ("Backspace", "rim"),
+            ("Comma", "hat_open"),
+            ("Digit2", "tom_high"),
+            ("Numpad3", "tom_low"),
+            ("Tab", "clap"),
+        ];
+        for (key, sound) in cases {
+            assert_eq!(rig.tap_named(key), [sound], "{key}");
+        }
+    }
+
+    #[test]
+    fn silent_keys_request_no_sound() {
+        let mut rig = Rig::new(None);
+        for key in ["ArrowUp", "ArrowLeft", "PageDown", "ShiftLeft", "MetaLeft", "CapsLock", "Lang1", "KanaMode"] {
+            assert_eq!(rig.tap_named(key).len(), 0, "{key}");
+        }
+        // 利用者が「無音」にしたキー。同じグループの別のキーは鳴る。
+        rig.store.update(&json!({"typing": {"keys": {"KeyA": "none"}}})).unwrap();
+        assert_eq!(rig.tap_named("KeyA").len(), 0);
+        assert_eq!(rig.tap_named("KeyB"), ["hat_closed"]);
+        // 無音のグループを鳴る音に変えれば、そのグループのキーが鳴る。
+        rig.store.update(&json!({"typing": {"groups": {"navigation": "tom_low"}}})).unwrap();
+        assert_eq!(rig.tap_named("ArrowUp"), ["tom_low"]);
+    }
+
+    #[test]
+    fn while_disabled_no_key_requests_a_sound_but_monitoring_goes_on() {
+        let mut rig = Rig::new(None);
+        assert_eq!(rig.tap_named("KeyA").len(), 1, "オンなら鳴る（前提）");
+
+        rig.store.set_enabled(false);
+
+        for &position in KeyPosition::ALL {
+            assert_eq!(rig.tap(position).len(), 0);
+        }
+        // オフの間に押しっぱなしにしたキーは、オンに戻した後も押下中として扱われる（監視は続いている）。
+        let a = KeyPosition::from_code_name("KeyA").unwrap();
+        dispatch(&mut rig.tracker, KeyEvent::Down { position: a, autorepeat: false }, &rig.engine, &rig.state);
+        rig.store.set_enabled(true);
+        dispatch(&mut rig.tracker, KeyEvent::Down { position: a, autorepeat: false }, &rig.engine, &rig.state);
+        assert_eq!(rig.drain_names().len(), 0);
+        dispatch(&mut rig.tracker, KeyEvent::Up { position: a }, &rig.engine, &rig.state);
+        assert_eq!(rig.tap(a).len(), 1, "オンに戻せば鳴る");
+    }
+
+    #[test]
+    fn preview_sounds_even_while_disabled() {
+        let rig = Rig::new(None);
+        rig.store.set_enabled(false);
+
+        assignment::preview(&rig.engine, "clap").unwrap();
+
+        assert_eq!(rig.drain_names(), ["clap"]);
+    }
+
+    #[test]
+    fn rewriting_the_settings_file_and_then_updating_through_the_command_changes_what_plays() {
+        let dir = TempDir::new();
+        // 起動前に設定ファイルを書き換えておく（文字キー全体をスネア、KeyJ だけキック）。
+        std::fs::write(
+            dir.0.join(SETTINGS_FILE_NAME),
+            r#"{"typing": {"groups": {"letters": "snare"}, "keys": {"KeyJ": "kick"}}}"#,
+        )
+        .unwrap();
+        let mut rig = Rig::new(Some(dir.0.clone()));
+        assert_eq!(rig.tap_named("KeyA"), ["snare"], "ファイルの内容が起動時から効く");
+        assert_eq!(rig.tap_named("KeyJ"), ["kick"]);
+
+        // 起動し直さずに、命令経由の更新で鳴り方が変わる。
+        rig.store.update(&json!({"typing": {"keys": {"KeyA": "tom_low"}, "groups": {"letters": "rim"}}})).unwrap();
+        assert_eq!(rig.tap_named("KeyA"), ["tom_low"]);
+        assert_eq!(rig.tap_named("KeyB"), ["rim"]);
+        assert_eq!(rig.tap_named("KeyJ"), ["kick"], "送られなかったキーの上書きはそのまま");
+
+        // null で上書きを消すと、グループに従う。さらにグループも消すと既定に戻る。
+        rig.store.update(&json!({"typing": {"keys": {"KeyA": null}}})).unwrap();
+        assert_eq!(rig.tap_named("KeyA"), ["rim"]);
+        rig.store.update(&json!({"typing": {"groups": {"letters": null}}})).unwrap();
+        assert_eq!(rig.tap_named("KeyA"), ["hat_closed"]);
+    }
+
+    #[test]
+    fn held_key_still_plays_only_once_through_the_assignment() {
+        let mut rig = Rig::new(None);
+        let space = KeyPosition::from_code_name("Space").unwrap();
+        let mut requests = 0;
+        for repeat in [false, true, true, true] {
+            dispatch(&mut rig.tracker, KeyEvent::Down { position: space, autorepeat: repeat }, &rig.engine, &rig.state);
+            requests += rig.drain_names().len();
+        }
+        assert_eq!(requests, 1);
     }
 }
