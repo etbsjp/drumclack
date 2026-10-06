@@ -200,7 +200,8 @@ mod macos_tap {
         user_info: *mut c_void,
     ) -> CgEventRef {
         // C のコールバックから panic が出ると未定義動作になるため、ここで止める。
-        // 内容（キーの位置・panic の文面）は何も出力しない。
+        // ここでは何も出力しない（既定の panic フックは文面を stderr に出すが、
+        // KeyPosition は Debug/Display を持たないため、キーの位置が文面に載ることはない）。
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             tap_callback_body(proxy, event_type, event, user_info)
         }));
@@ -429,7 +430,8 @@ mod windows_hook {
 
     unsafe extern "system" fn hook_proc(code: i32, w_param: usize, l_param: isize) -> isize {
         // panic が出ても必ず次のフックへ渡す（キー入力を他のアプリから奪わない）。
-        // 内容（キーの位置・panic の文面）は何も出力しない。
+        // ここでは何も出力しない（既定の panic フックは文面を stderr に出すが、
+        // KeyPosition は Debug/Display を持たないため、キーの位置が文面に載ることはない）。
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             handle_hook_event(code, l_param)
         }));
