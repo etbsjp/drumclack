@@ -3,9 +3,7 @@
 //! ここに集める情報はすべて「今どうなっているか」の状態のみで、
 //! 押されたキーの内容や文字列など、入力内容そのものは一切保持しない。
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::audio::AudioEngine;
 use crate::permission;
@@ -28,14 +26,9 @@ pub struct AppState {
     /// 音声合成・再生エンジン（初期化に成功した場合のみ Some）。
     /// キー入力スレッドと状態表示コマンドの双方から参照するため `Arc` で共有する。
     pub audio_engine: Option<Arc<AudioEngine>>,
-    /// 直近に発音した時刻（UNIX epoch ミリ秒）。まだ一度も鳴っていなければ None。
-    last_play_ms: AtomicU64,
     /// `DRUMCLACK_TEST_DELAY_MS` の値（テスト用の遅延発音、測定の陽性対照）。
     pub test_delay_ms: Option<u64>,
 }
-
-/// `last_play_ms` の「未発音」を表す番兵値。
-const NOT_PLAYED_YET: u64 = 0;
 
 impl AppState {
     pub fn new(audio_init: AudioInitStatus, audio_engine: Option<Arc<AudioEngine>>) -> Self {
@@ -55,27 +48,14 @@ impl AppState {
             platform,
             audio_init,
             audio_engine,
-            last_play_ms: AtomicU64::new(NOT_PLAYED_YET),
             test_delay_ms,
         }
     }
 
-    /// 発音した瞬間に呼ぶ。押されたキーの種類は受け取らず、時刻のみ記録する。
-    pub fn record_play_now(&self) {
-        let ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(NOT_PLAYED_YET)
-            // 0 は「未発音」の番兵値と衝突しうるが、1970年時点なので実運用上は無視できる。
-            .max(1);
-        self.last_play_ms.store(ms, Ordering::Relaxed);
-    }
-
+    /// 直近に実際に鳴り始めた時刻（UNIX epoch ミリ秒）。まだ一度も鳴っていなければ None。
+    /// 16音の上限で鳴らなかった打鍵は含まない（音声コールバックが受理した発音だけ）。
     pub fn last_play_ms(&self) -> Option<u64> {
-        match self.last_play_ms.load(Ordering::Relaxed) {
-            NOT_PLAYED_YET => None,
-            ms => Some(ms),
-        }
+        self.audio_engine.as_ref().and_then(|e| e.last_accepted_play_ms())
     }
 }
 
