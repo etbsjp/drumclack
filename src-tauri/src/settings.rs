@@ -94,7 +94,10 @@ named_enum! {
 }
 
 named_enum! {
+    /// 画面に描くキーボード配列。`Auto` は「利用者がまだ選んでいない」状態で、
+    /// 実際に JIS か US のどちらで描くかは画面が OS の言語から決める（保存するのは選んだ値だけ）。
     KeyboardLayout {
+        Auto => "auto",
         Jis => "jis",
         Us => "us",
     }
@@ -134,7 +137,7 @@ impl Default for Settings {
             volume: DEFAULT_VOLUME,
             dynamics: DEFAULT_DYNAMICS,
             language: Language::Auto,
-            keyboard_layout: KeyboardLayout::Jis,
+            keyboard_layout: KeyboardLayout::Auto,
             first_sound_done: false,
             typing: Assignments::default(),
             play: Assignments::default(),
@@ -291,6 +294,28 @@ mod tests {
 
         let reread = Settings::from_json_str(&parsed.to_json_string()).expect("書いたものは読める");
         assert_eq!(reread, parsed);
+    }
+
+    #[test]
+    fn keyboard_layout_starts_unchosen_and_keeps_reading_jis_and_us() {
+        // 選ぶ前は auto。設定ファイルに項目が無い（#13 以前の形）ときも auto。
+        assert_eq!(Settings::default().keyboard_layout, KeyboardLayout::Auto);
+        assert_eq!(Settings::from_json_str("{}").unwrap().keyboard_layout, KeyboardLayout::Auto);
+        let written: Value = serde_json::from_str(&Settings::default().to_json_string()).unwrap();
+        assert_eq!(written["keyboard_layout"], json!("auto"));
+
+        // 既に jis / us と書かれたファイルは、そのまま読める（auto に戻さない）。
+        for (name, expected) in
+            [("jis", KeyboardLayout::Jis), ("us", KeyboardLayout::Us), ("auto", KeyboardLayout::Auto)]
+        {
+            let settings = Settings::from_value(&json!({ "keyboard_layout": name })).unwrap();
+            assert_eq!(settings.keyboard_layout, expected, "{name}");
+        }
+
+        // 知らない値はその項目だけ「今の値のまま」。選んだあとに auto へ戻す更新も通る。
+        let chosen = Settings::from_value(&json!({"keyboard_layout": "us"})).unwrap();
+        assert_eq!(chosen.merged(&json!({"keyboard_layout": "dvorak"})).unwrap().keyboard_layout, KeyboardLayout::Us);
+        assert_eq!(chosen.merged(&json!({"keyboard_layout": "auto"})).unwrap().keyboard_layout, KeyboardLayout::Auto);
     }
 
     #[test]
