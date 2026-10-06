@@ -18,6 +18,9 @@ pub const SETTINGS_FILE_NAME: &str = "settings.json";
 pub const BROKEN_FILE_NAME: &str = "settings.broken.json";
 const TEMP_FILE_NAME: &str = "settings.json.tmp";
 
+const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+/// 新しい版のファイルを残す名前の候補の数（`settings.v2.json`、`settings.v2.1.json` …）。
+const FUTURE_COPY_CANDIDATES: u32 = 10;
 const BROKEN_PREVIOUS_FILE_NAME: &str = "settings.broken.json.1";
 
 /// 設定ファイルを読んだ結果。
@@ -49,8 +52,10 @@ pub fn load(dir: &Path) -> LoadOutcome {
         Err(_) => return LoadOutcome { save_blocked: true, ..LoadOutcome::defaults() },
     };
 
-    let parsed = String::from_utf8(bytes).ok().and_then(|text| {
-        let value: Value = serde_json::from_str(&text).ok()?;
+    // Windows のメモ帳などが付ける UTF-8 の BOM は、中身が正しければ壊れ扱いにしない。
+    let body = bytes.strip_prefix(UTF8_BOM).unwrap_or(&bytes);
+    let parsed = std::str::from_utf8(body).ok().and_then(|text| {
+        let value: Value = serde_json::from_str(text).ok()?;
         let settings = Settings::from_value(&value)?;
         let version = value.get("version").and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok());
         Some((settings, version))
@@ -83,9 +88,26 @@ fn recover_from_broken(dir: &Path) -> LoadOutcome {
     LoadOutcome { recovered_from_broken: succeeded, save_blocked: !succeeded, ..LoadOutcome::defaults() }
 }
 
-/// 新しい版のファイルを、書き換える前に `settings.v{n}.json` へ残す。
+/// 新しい版のファイルを、書き換える前に `settings.v{n}.json` へ残す。同名が既にあれば上書きせず、
+/// `settings.v{n}.1.json` 以降の空いている名前へ残す。空きが無ければ失敗（呼び出し側は保存しない）。
 fn keep_future_version(dir: &Path, version: u32) -> io::Result<()> {
-    fs::copy(dir.join(SETTINGS_FILE_NAME), dir.join(format!("settings.v{version}.json"))).map(|_| ())
+    let mut source = File::open(dir.join(SETTINGS_FILE_NAME))?;
+    for attempt in 0..FUTURE_COPY_CANDIDATES {
+        let name = match attempt {
+            0 => format!("settings.v{version}.json"),
+            n => format!("settings.v{version}.{n}.json"),
+        };
+        // create_new: 既にあるファイルは決して書き換えない。
+        match fs::OpenOptions::new().write(true).create_new(true).open(dir.join(name)) {
+            Ok(mut destination) => {
+                io::copy(&mut source, &mut destination)?;
+                return destination.sync_all();
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "no free name to keep the newer-version file"))
 }
 
 /// 設定を保存する（別名で書いてから置き換える）。保存先のフォルダが無ければ作る。
@@ -519,14 +541,49 @@ mod tests {
         let dir = TempDir::new();
         let original = br#"{"version": 3, "volume": 0.3}"#;
         fs::write(dir.path().join(SETTINGS_FILE_NAME), original).unwrap();
-        // コピー先がフォルダで塞がっている。
+        // コピー先の候補がすべて塞がっている。
         fs::create_dir_all(dir.path().join("settings.v3.json")).unwrap();
+        for n in 1..FUTURE_COPY_CANDIDATES {
+            fs::create_dir_all(dir.path().join(format!("settings.v3.{n}.json"))).unwrap();
+        }
         let store = SettingsStore::open(Some(dir.path().to_path_buf()), None);
 
         let snapshot = store.update(&json!({"volume": 0.6})).unwrap();
 
         assert!(snapshot.save_failed);
         assert_eq!(fs::read(dir.path().join(SETTINGS_FILE_NAME)).unwrap(), original);
+    }
+
+    #[test]
+    fn existing_kept_copy_is_never_overwritten() {
+        let dir = TempDir::new();
+        fs::write(dir.path().join("settings.v2.json"), b"kept earlier").unwrap();
+        let original = br#"{"version": 2, "volume": 0.3}"#;
+        fs::write(dir.path().join(SETTINGS_FILE_NAME), original).unwrap();
+        let store = SettingsStore::open(Some(dir.path().to_path_buf()), None);
+
+        let snapshot = store.update(&json!({"volume": 0.6})).unwrap();
+
+        assert!(!snapshot.save_failed);
+        assert_eq!(fs::read(dir.path().join("settings.v2.json")).unwrap(), b"kept earlier");
+        assert_eq!(fs::read(dir.path().join("settings.v2.1.json")).unwrap(), original);
+    }
+
+    #[test]
+    fn file_saved_with_a_utf8_bom_is_read_normally() {
+        let dir = TempDir::new();
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(br#"{"volume": 0.3, "typing": {"keys": {"KeyJ": "kick"}}}"#);
+        fs::write(dir.path().join(SETTINGS_FILE_NAME), &bytes).unwrap();
+
+        let outcome = load(dir.path());
+
+        assert!(!outcome.recovered_from_broken);
+        assert!(!outcome.save_blocked);
+        assert_eq!(outcome.settings.volume, 0.3);
+        assert_eq!(outcome.settings.typing.keys["KeyJ"], Sound::Kick);
+        assert!(!dir.path().join(BROKEN_FILE_NAME).exists());
+        assert_eq!(fs::read(dir.path().join(SETTINGS_FILE_NAME)).unwrap(), bytes);
     }
 
     #[test]
