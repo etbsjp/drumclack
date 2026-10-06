@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "kit": "808",
+  "enabled": false,
+  "volume": 0.5,
+  "dynamics": 0.25,
+  "language": "en",
+  "keyboard_layout": "us",
+  "first_sound_done": true,
+  "typing": {
+    "groups": { "letters": "snare", "modifiers": "clap" },
+    "keys": { "KeyJ": "kick", "Numpad5": "none" }
+  },
+  "play": {
+    "groups": { "navigation": "tom_low" },
+    "keys": { "Space": "hat_open" }
+  }
+}
