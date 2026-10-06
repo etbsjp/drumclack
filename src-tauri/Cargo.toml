@@ -16,11 +16,8 @@ serde_json = "1"
 # 音声合成・再生。
 cpal = "0.15"
 
-# Windows のキー入力「受信専用」フック（WH_KEYBOARD_LL）に使用。
-# macOS は rdev を使わず、CGEventTap への直接 FFI（src/keyboard.rs 内の
-# macos_tap モジュール）に切り替えた。選定理由は README を参照。
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-rdev = "0.5"
+# キー入力の監視は両 OS とも OS の API を直接呼ぶ（src/keyboard.rs の macos_tap / windows_hook）。
+# 外部のキー入力クレートは使わない。理由は README を参照。
 
 [profile.release]
 panic = "unwind"
