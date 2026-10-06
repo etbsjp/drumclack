@@ -92,6 +92,12 @@ impl Kit {
         self.sound(index).map_or(0, |s| s.variants.iter().map(|v| v.len() * std::mem::size_of::<f32>()).sum())
     }
 
+    /// 音の変種の波形。製品と同じキットの中身をテストから確かめるための取得口。
+    #[cfg(test)]
+    pub fn variant_samples(&self, index: usize, variant: usize) -> Option<&[f32]> {
+        self.buffer(index, variant)
+    }
+
     fn sound(&self, index: usize) -> Option<&Sound> {
         self.sounds.get(index).map(|(_, s)| s)
     }

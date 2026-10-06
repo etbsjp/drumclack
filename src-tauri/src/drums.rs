@@ -247,7 +247,7 @@ impl Rng {
     }
 }
 
-/// 一次のローパスフィルタの係数。
+/// 一次のローパスフィルタの係数。ハイパスにも使う（ローパスの出力を入力から引いた残りがハイパス）。
 fn lp_coef(cutoff_hz: f32, sample_rate: u32) -> f32 {
     1.0 - (-std::f32::consts::TAU * cutoff_hz / sample_rate as f32).exp()
 }
@@ -267,10 +267,16 @@ fn tail_fade(i: usize, len: usize, fade_len: usize) -> f32 {
 /// 1音・1変種の波形を合成する。波形の最大値は `spec.peak` に揃える。
 pub fn synthesize(spec: &DrumSpec, sample_rate: u32, sound_index: u32, variant: usize) -> Vec<f32> {
     let (pitch, decay) = variant_scales(variant);
+    synthesize_with(spec, sample_rate, seed_for(sound_index, variant), pitch, decay)
+}
+
+/// 乱数の種・高さの倍率・減衰の倍率を直接指定して合成する。
+/// 種と高さ・減衰を切り離して検証できるよう、[`synthesize`] から分けてある。
+fn synthesize_with(spec: &DrumSpec, sample_rate: u32, seed: u32, pitch: f32, decay: f32) -> Vec<f32> {
     let len = ((spec.duration_sec * sample_rate as f32).ceil() as usize).max(2);
     let fade_len = (spec.fade_out_sec * sample_rate as f32).round() as usize;
     let dt = 1.0 / sample_rate as f32;
-    let mut rng = Rng::new(seed_for(sound_index, variant));
+    let mut rng = Rng::new(seed);
 
     let (tone, metal, noise) = (&spec.tone, &spec.metal, &spec.noise);
     let (mut tone_phase, mut partial_phase) = (0.0_f32, 0.0_f32);
@@ -393,7 +399,11 @@ impl VariantPicker {
     }
 
     /// 音 `sound`（変種が `count` 個）で次に鳴らす変種の番号。
+    ///
+    /// 単一のスレッド（キー監視のスレッド）から呼ぶ前提。原子的な値で持っているのは
+    /// `&self` で呼べるようにするためで、複数スレッドから同時に呼ぶと同じ変種が続くことがある。
     pub fn pick(&self, sound: usize, count: usize) -> usize {
+        debug_assert!(count <= u8::MAX as usize, "変種の数は u8 に収まる範囲");
         if count <= 1 {
             return 0;
         }
@@ -432,27 +442,26 @@ mod tests {
         lowest_hz: f32,
     }
 
+    /// 製品と同じ `build_free_kit` の出力から、全音・全変種の波形を取り出す。
+    /// テスト側で引くのは名前・フェード長・最低周波数だけ。
     fn all_rendered(sample_rate: u32) -> Vec<Rendered> {
-        let mut out = vec![Rendered {
-            name: "kick",
-            variants: (0..VARIANT_COUNT)
-                .map(|v| {
-                    let (p, d) = variant_scales(v);
-                    kick::synthesize_kick_variant(sample_rate, p, d)
-                })
-                .collect(),
-            fade_out_sec: kick::FADE_OUT_SEC,
-            lowest_hz: kick::LOWEST_FREQ_HZ,
-        }];
-        for (i, spec) in DRUM_SPECS.iter().enumerate() {
-            out.push(Rendered {
-                name: spec.name,
-                variants: (0..VARIANT_COUNT).map(|v| synthesize(spec, sample_rate, i as u32 + 1, v)).collect(),
-                fade_out_sec: spec.fade_out_sec,
-                lowest_hz: spec.lowest_hz(),
-            });
-        }
-        out
+        let kit = build_free_kit(sample_rate);
+        let info: Vec<(&'static str, f32, f32)> = std::iter::once(("kick", kick::FADE_OUT_SEC, kick::LOWEST_FREQ_HZ))
+            .chain(DRUM_SPECS.iter().map(|spec| (spec.name, spec.fade_out_sec, spec.lowest_hz())))
+            .collect();
+        info.into_iter()
+            .map(|(name, fade_out_sec, lowest_hz)| {
+                let index = kit.index_of(name).unwrap_or_else(|| panic!("{name} がキットに無い"));
+                Rendered {
+                    name,
+                    variants: (0..kit.variant_count(index))
+                        .map(|v| kit.variant_samples(index, v).expect("変種がある").to_vec())
+                        .collect(),
+                    fade_out_sec,
+                    lowest_hz,
+                }
+            })
+            .collect()
     }
 
     fn peak(samples: &[f32]) -> f32 {
@@ -460,6 +469,9 @@ mod tests {
     }
 
     /// 同じ値が連続する最長の長さ（振幅が `floor` を超える区間だけ数える）。頭打ちの検出。
+    ///
+    /// これは生成した波形側の確認。頭打ちの本丸は、複数の音が重なる出力段の混合テスト
+    /// （`realistic_mix_does_not_stick_to_full_scale`）で見る。
     fn longest_flat_run(samples: &[f32], floor: f32) -> usize {
         let (mut run, mut longest) = (1usize, 1usize);
         for i in 1..samples.len() {
@@ -579,6 +591,48 @@ mod tests {
         }
     }
 
+    // 乱数の種を固定して、高さ・減衰の振れだけで4変種が違うこと。
+    // ノイズ系（snare・hat・clap）は、種が違うだけで上のテストを通ってしまうため、
+    // 種を切り離した状態でも「高さ・減衰の振れ」が波形に効いていることをここで確かめる。
+    // 振れ幅（`VARIANT_*_STEPS` / `*_SPREAD`）を 0 にすると差が0になって落ちる。
+    #[test]
+    fn pitch_and_decay_alone_make_the_variants_differ() {
+        // 実測の最小は clap の 0.016（種のない音で減衰だけが効く）。下限はその約 6 割。
+        const MIN_RELATIVE_DIFF: f32 = 0.01;
+        type Render = Box<dyn Fn(usize) -> Vec<f32>>;
+        let mut sounds: Vec<(&str, Render)> = vec![(
+            "kick",
+            Box::new(|v| {
+                let (p, d) = variant_scales(v);
+                kick::synthesize_kick_variant(SR, p, d)
+            }),
+        )];
+        for spec in &DRUM_SPECS {
+            sounds.push((
+                spec.name,
+                Box::new(move |v| {
+                    let (p, d) = variant_scales(v);
+                    synthesize_with(spec, SR, 12345, p, d)
+                }),
+            ));
+        }
+        for (name, render) in &sounds {
+            let waves: Vec<Vec<f32>> = (0..VARIANT_COUNT).map(render).collect();
+            for a in 0..VARIANT_COUNT {
+                for b in (a + 1)..VARIANT_COUNT {
+                    let diff = rms_diff(&waves[a], &waves[b]);
+                    let level = rms(&waves[a]).max(rms(&waves[b]));
+                    println!("[計測] {name} 変種{a}/{b} 種固定の相対差 {:.3}", diff / level);
+                    assert!(
+                        diff >= MIN_RELATIVE_DIFF * level,
+                        "{name} の変種{a}と{b}が、種を固定すると似すぎ: 差{diff:.4} / 実効値{level:.4} = {:.3}",
+                        diff / level
+                    );
+                }
+            }
+        }
+    }
+
     // 変種の振れ幅が決めた範囲（高さ±1.5%・減衰±5%）に収まっていること。
     #[test]
     fn variant_spread_stays_within_the_designed_range() {
@@ -668,7 +722,8 @@ mod tests {
     }
 
     // 現実的な混合条件での頭打ちの張り付き割合。
-    // 閉じハイハットを30ms間隔で連打しつつ、キックとスネアも鳴らす（実際の打鍵の最悪に近い場面）。
+    // 閉じハイハットを30ms間隔で連打しつつ、キックとスネアも鳴らす（この3音の場面。
+    // 8音すべてが同時に鳴る場面は実際の打鍵では起こらないので扱わない）。
     // 出力は audio.rs と同じ式（合算×VOICE_GAIN→tanh）。張り付き＝出力の絶対値が0.999以上。
     #[test]
     fn realistic_mix_does_not_stick_to_full_scale() {
