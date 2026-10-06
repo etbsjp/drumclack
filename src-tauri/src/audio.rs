@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::kick;
+use crate::drums::{build_free_kit, VariantPicker};
 use crate::voices::{Kit, PlayRequest, RequestQueue, VoicePool, MAX_REQUEST_VOLUME, REQUEST_QUEUE_CAPACITY};
 
 /// 1音あたりの基本ゲイン。フルスケール(1.0)のまま合算すると、複数ボイスが
@@ -31,7 +31,7 @@ use crate::voices::{Kit, PlayRequest, RequestQueue, VoicePool, MAX_REQUEST_VOLUM
 ///
 /// 0.3 では単発が 0.262 と小さく（clamp 方式だった頃の 0.900 比で約11dB低下）、
 /// 利用者が OS 側の音量を上げて使うことになり、その状態での連打が過大になる。
-const VOICE_GAIN: f32 = 0.7;
+pub const VOICE_GAIN: f32 = 0.7;
 
 /// ソフトクリップ。`tanh` でなめらかに ±1.0 へ飽和させる。
 /// `clamp` のような急激な折れ線と違い、入力が大きくなるほど徐々に
@@ -55,14 +55,6 @@ fn now_epoch_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0).max(1)
 }
 
-/// 起動時に合成する無料キット。いまはキックだけ（止め合いの組なし）。
-fn build_free_kit(sample_rate: u32) -> Kit {
-    let mut kit = Kit::new();
-    kit.add("kick", vec![kick::synthesize_kick(sample_rate)], None)
-        .expect("合成したキックは空ではない");
-    kit
-}
-
 /// キー監視側（書く）と音声コールバック（読む）が共有する窓口。
 ///
 /// 中身はキット（作成後は読むだけ）と、原子的な値・ロックなしの待ち行列だけで、
@@ -70,6 +62,7 @@ fn build_free_kit(sample_rate: u32) -> Kit {
 /// cpal の `Stream` はここでは保持せず [`spawn_output_stream`] の専用スレッドが握る。
 pub struct AudioEngine {
     kit: Kit,
+    variant_picker: VariantPicker,
     requests: RequestQueue,
     active_voices: AtomicUsize,
     /// 音声コールバックが最後に発音を受理した時刻（UNIX epoch ミリ秒）。0 は未発音。
@@ -82,6 +75,7 @@ pub struct AudioEngine {
 impl AudioEngine {
     pub fn new(kit: Kit, sample_rate: u32) -> Self {
         Self {
+            variant_picker: VariantPicker::new(kit.sound_count()),
             kit,
             requests: RequestQueue::new(REQUEST_QUEUE_CAPACITY),
             active_voices: AtomicUsize::new(0),
@@ -111,6 +105,16 @@ impl AudioEngine {
             variant: variant.min(usize::from(u8::MAX)) as u8,
             volume,
         })
+    }
+
+    /// 変種を自動で選んで鳴らす。直前に同じ音で鳴らした変種とは別の変種を選ぶ。
+    /// それ以外は [`AudioEngine::play`] と同じ。
+    pub fn play_varied(&self, name: &str, volume: f32) -> bool {
+        let Some(sound) = self.kit.index_of(name) else {
+            return false;
+        };
+        let variant = self.variant_picker.pick(sound, self.kit.variant_count(sound));
+        self.play(name, variant, volume)
     }
 
     /// 全体音量（0.0〜1.0）を設定する。数値でない値は無視する。
@@ -352,6 +356,7 @@ fn build_stream() -> Result<(Arc<AudioEngine>, cpal::Stream), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kick;
 
     fn range(min: u32, max: u32) -> cpal::SupportedBufferSize {
         cpal::SupportedBufferSize::Range { min, max }
@@ -545,7 +550,7 @@ mod tests {
     #[test]
     fn unknown_name_is_silent_and_does_not_add_a_voice() {
         let mut rig = Rig::free_kit();
-        assert!(!rig.engine.play("snare", 0, 1.0));
+        assert!(!rig.engine.play("cowbell", 0, 1.0));
         let out = rig.render(2000);
         assert!(out.iter().all(|s| *s == 0.0));
         assert_eq!(rig.engine.active_voice_count(), 0);

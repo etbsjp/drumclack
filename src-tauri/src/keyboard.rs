@@ -53,7 +53,7 @@ fn handle_key_down(engine: Arc<AudioEngine>, state: Arc<AppState>) {
 fn trigger(engine: &AudioEngine) {
     // 直近の発音時刻は、音声コールバックが実際に鳴らした時点でエンジン側が記録する
     // （16音の上限で鳴らなかった打鍵は記録されない）。音の名前の割り当ては後続の issue で行う。
-    engine.play("kick", 0, 1.0);
+    engine.play_varied("kick", 1.0);
 }
 
 /// macOS: `CGEventTap` への直接 FFI によるキー監視。
