@@ -42,6 +42,10 @@ src-tauri/gen/schemas/
 *.pfx
 secrets/
 
+# Playwright（画面のテスト）の出力
+test-results/
+playwright-report/
+
 # Measurement recordings (latency tests)
 recordings/
 

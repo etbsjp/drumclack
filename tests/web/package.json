@@ -1,0 +1,12 @@
+{
+  "name": "drumclack-web-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "画面（web/）のテスト。web/ 自体はビルド工程を持たない。ここは検査用の依存だけを置く。",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

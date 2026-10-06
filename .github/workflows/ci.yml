@@ -52,6 +52,48 @@ jobs:
       - name: tauri.conf.json の CSP が変わっていないこと
         run: bash tools/ci/check_csp.sh
 
+  # 画面（web/）の検査。web/ はビルド工程を持たない素の HTML/JS なので、構文の検査と、
+  # 素のブラウザで開いて Rust との橋渡しを差し替える画面のテストで確かめる。
+  # 対応表（i18n/*.json）の読み込みは file:// では動かないため、tests/web/serve.js の簡易 HTTP サーバ経由で開く。
+  web-tests:
+    name: 画面（web/）の構文検査と Playwright
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tests/web/package-lock.json
+
+      - name: node --check（web/ と tests/web/ の JavaScript の構文）
+        run: |
+          set -e
+          for file in web/*.js tests/web/*.js; do
+            echo "node --check $file"
+            node --check "$file"
+          done
+
+      - name: 対応表（JSON）が JSON として読めること
+        run: |
+          set -e
+          for file in web/i18n/*.json; do
+            node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$file"
+          done
+
+      - name: 依存のインストール（検査用のみ。web/ には何も足さない）
+        working-directory: tests/web
+        run: npm ci
+
+      - name: Playwright のブラウザ（Chromium）
+        working-directory: tests/web
+        run: npx playwright install --with-deps chromium
+
+      - name: 画面のテスト
+        working-directory: tests/web
+        run: npx playwright test
+
   resources-scripts-lint:
     name: tools/resources syntax check
     runs-on: ubuntu-latest

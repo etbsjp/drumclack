@@ -1,3 +1,7 @@
+/* ==========================================================================
+   配色（明るい配色・暗い配色。文字は WCAG AA の 4.5:1、枠・操作部品は 3:1 以上）
+   ========================================================================== */
+
 :root {
   color-scheme: light dark;
 
@@ -5,6 +9,7 @@
   --fg: #1a1a1a;
   --muted: #595959; /* #fff 背景に対し約 6.4:1 */
   --border: #8a8a8a; /* #fff 背景に対し約 3.3:1（WCAG AA UIコンポーネント基準） */
+  --accent: #0b5cad; /* #fff 背景に対し約 6.6:1（選択中の区画・つまみ・フォーカス） */
 
   --ok-fg: #1e6b2f; /* #fff 背景に対し約 5.4:1 */
   --warn-fg: #8a4b00; /* #fff 背景に対し約 5.2:1 */
@@ -20,6 +25,7 @@
     --fg: #f2f2f2;
     --muted: #b7b9bd; /* 背景に対し約 8.5:1 */
     --border: #757575; /* 背景に対し約 3.6:1（WCAG AA UIコンポーネント基準） */
+    --accent: #7ab7ff; /* 背景に対し約 8:1 */
 
     --ok-fg: #7fd894; /* 背景に対し約 9.8:1 */
     --warn-fg: #f0b459; /* 背景に対し約 9.7:1 */
@@ -35,6 +41,7 @@
   --fg: #f2f2f2;
   --muted: #b7b9bd;
   --border: #757575;
+  --accent: #7ab7ff;
 
   --ok-fg: #7fd894;
   --warn-fg: #f0b459;
@@ -43,6 +50,10 @@
   --test-bg: #4a3900;
   --test-fg: #ffe8a3;
 }
+
+/* ==========================================================================
+   基本
+   ========================================================================== */
 
 * {
   box-sizing: border-box;
@@ -59,65 +70,72 @@ body {
   line-height: 1.6;
 }
 
-main {
-  padding: 24px;
-  max-width: 480px;
+/* 文言（対応表）が入るまで、キーのままの文字を一瞬でも見せない */
+body:where(:not([data-ready])) .app {
+  visibility: hidden;
+}
+
+.app {
+  padding: 20px 24px 24px;
+  max-width: 880px;
 }
 
 h1 {
   font-size: 18px;
-  margin: 0 0 4px;
+  margin: 0 0 12px;
 }
 
-.lead {
-  margin: 0 0 20px;
-  color: var(--ok-fg);
-  font-weight: 600;
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-.status-list {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  /* 情報グループ内（項目同士）の余白 */
-  gap: 14px;
-}
-
-.status-row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px; /* ラベルと値の最小単位の余白 */
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.status-row:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-dt {
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap; /* 短いラベルの語中改行を防ぐ */
-}
-
-dd {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-dd.state-ok {
+.state-ok {
   color: var(--ok-fg);
 }
 
-dd.state-warn {
+.state-warn {
   color: var(--warn-fg);
 }
 
-dd.state-error {
+.state-error {
   color: var(--error-fg);
+}
+
+/* ==========================================================================
+   状態の帯（正常時は1行、異常時は次の操作つき。詳細は畳む）
+   ========================================================================== */
+
+.status-band {
+  border: 1px solid var(--border);
+  border-left-width: 6px;
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+
+.status-band[data-state="ok"] {
+  border-left-color: var(--ok-fg);
+}
+
+.status-band[data-state="warn"] {
+  border-left-color: var(--warn-fg);
+}
+
+.status-band[data-state="error"] {
+  border-left-color: var(--error-fg);
+}
+
+.status-issues {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px; /* 問題どうしの余白（問題の中の余白より大きくする） */
+}
+
+.status-issue {
+  font-weight: 600;
 }
 
 .action-hint {
@@ -137,12 +155,202 @@ dd.state-error {
   color: var(--muted);
 }
 
+/* 状態の帯 > 詳細（直近の発音・同時発音数など） */
+
+.status-details {
+  margin-top: 8px;
+}
+
+.status-details summary {
+  display: inline-block;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-detail-list {
+  margin: 8px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 16px;
+}
+
+.status-detail-row[hidden] {
+  display: none;
+}
+
+.status-detail-row dt {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap; /* 短いラベルの語中改行を防ぐ */
+}
+
+.status-detail-row dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .test-mode {
-  margin-top: 20px;
+  margin: 12px 0 0;
   padding: 10px 12px;
   border-radius: 6px;
   background: var(--test-bg);
   color: var(--test-fg);
   font-weight: 600;
   font-size: 13px;
+}
+
+/* ==========================================================================
+   区画の切り替え（設定／割り当て／演奏）
+   ========================================================================== */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -1px;
+  padding: 8px 16px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab[aria-selected="true"] {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.panel {
+  padding-top: 20px;
+}
+
+.placeholder {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* ==========================================================================
+   設定の区画
+   ========================================================================== */
+
+.notice {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-left-width: 6px;
+  border-radius: 6px;
+}
+
+.notice-warn {
+  border-left-color: var(--warn-fg);
+  color: var(--warn-fg);
+}
+
+.notice-error {
+  border-left-color: var(--error-fg);
+  color: var(--error-fg);
+}
+
+.notice[hidden] {
+  display: none;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 28px; /* グループ間の余白（グループ内の項目間より大きくする） */
+  max-width: 640px;
+}
+
+.settings-group {
+  margin: 0;
+  padding: 0;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-group legend {
+  padding: 0;
+  margin-bottom: 12px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* ラベル列の幅を固定して、操作部品の左端を揃える */
+.field {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: start;
+}
+
+.field-label {
+  font-weight: 600;
+  padding-top: 2px;
+}
+
+.field-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px; /* 操作部品とそのラベルは最も近づける */
+}
+
+.switch-label input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.slider-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.slider-value {
+  min-width: 4ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+select {
+  max-width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
