@@ -56,6 +56,16 @@ impl AppState {
         }
     }
 
+    /// 入力監視の許可が足りているか。Mac は許可が下りていなければ偽。Windows には許可の概念が無いので常に真。
+    pub fn input_permission_ok(&self) -> bool {
+        self.platform != "macos" || permission::check_input_monitoring() == "granted"
+    }
+
+    /// 音声デバイスの初期化に成功しているか。
+    pub fn audio_ok(&self) -> bool {
+        matches!(self.audio_init, AudioInitStatus::Ok { .. })
+    }
+
     /// 直近に実際に鳴り始めた時刻（UNIX epoch ミリ秒）。まだ一度も鳴っていなければ None。
     /// 16音の上限で鳴らなかった打鍵は含まない（音声コールバックが受理した発音だけ）。
     pub fn last_play_ms(&self) -> Option<u64> {

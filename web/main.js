@@ -374,6 +374,13 @@ function bindTabs() {
     }
   }
 
+  // メニューバー／トレイの「演奏モードを開く」から、Rust が窓を出したあとに呼ぶ入口。
+  // 区画の名前（settings / assign / play）で切り替えるだけ。知らない名前は無視する。
+  window.drumclackShowSection = (name) => {
+    const tab = tabs.find((candidate) => candidate.dataset.testid === `tab-${name}`);
+    if (tab) select(tab);
+  };
+
   for (const tab of tabs) {
     tab.addEventListener("click", () => select(tab));
     tab.addEventListener("keydown", (event) => {

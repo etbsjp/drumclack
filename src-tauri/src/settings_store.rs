@@ -265,15 +265,11 @@ impl SettingsStore {
     }
 
     /// Rust 側（メニューのオン／オフなど）から、オン／オフを変える。画面の更新と同じ差分の経路を通る。
-    // 呼び出し元（メニュー）は後の issue（#17）。それまで本体からは呼ばれない。
-    #[allow(dead_code)]
     pub fn set_enabled(&self, enabled: bool) -> SettingsSnapshot {
         self.update(&serde_json::json!({ "enabled": enabled })).expect("オブジェクトの差分は必ず重ねられる")
     }
 
     /// Rust 側から「初めて音が鳴った」印を付ける。画面の更新と同じ差分の経路を通る。
-    // 呼び出し元は後の issue（#17）。それまで本体からは呼ばれない。
-    #[allow(dead_code)]
     pub fn mark_first_sound_done(&self) -> SettingsSnapshot {
         self.update(&serde_json::json!({ "first_sound_done": true }))
             .expect("オブジェクトの差分は必ず重ねられる")

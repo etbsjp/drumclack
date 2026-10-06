@@ -1,5 +1,6 @@
 {
   "app.title": "drumclack",
+  "app.resident": "窓を閉じても終了しません（メニューバー／トレイで動き続けます）。終了はアイコンのメニューの「終了」から。",
   "common.close": "閉じる",
   "nav.label": "区画",
   "nav.settings": "設定",

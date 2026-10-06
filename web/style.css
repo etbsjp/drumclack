@@ -251,6 +251,12 @@ h1 {
   padding-top: 20px;
 }
 
+.resident-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .placeholder {
   margin: 0;
   color: var(--muted);
