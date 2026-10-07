@@ -38,6 +38,9 @@ struct Tray {
     open_play: MenuItem<Wry>,
     autostart: CheckMenuItem<Wry>,
     quit: MenuItem<Wry>,
+    /// 左上のアプリのメニューに足した項目（Mac のみ）。
+    #[cfg(target_os = "macos")]
+    app_menu: crate::app_menu::AppMenu,
     /// 最後に反映したアイコンの状態と言語。変わったときだけ OS の部品を更新する。
     rendered: Mutex<Option<(IconState, MenuLang)>>,
 }
@@ -49,16 +52,28 @@ fn load_icon(state: IconState) -> Image<'static> {
 /// 窓を出す。Mac は Dock にアイコンを戻す。`section` があれば、その区画（settings / assign / play）を開く。
 pub fn show_main_window(app: &AppHandle, section: Option<&str>) {
     #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    log_if_failed("activation policy", app.set_activation_policy(tauri::ActivationPolicy::Regular));
 
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        if let Some(section) = section {
-            // 画面側の入口（web/main.js の drumclackShowSection）を呼ぶだけ。画面に権限は要らない。
-            let _ = window.eval(format!("window.drumclackShowSection && window.drumclackShowSection({section:?})"));
-        }
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        eprintln!("[drumclack] 窓を出せませんでした: メインの窓が見つかりません");
+        return;
+    };
+    // 失敗しても止めずに続ける。失敗は戻り値で捨てず、原因が追えるようにログへ出す（打鍵の内容は含まない）。
+    log_if_failed("show", window.show());
+    log_if_failed("unminimize", window.unminimize());
+    log_if_failed("set_focus", window.set_focus());
+    if let Some(section) = section {
+        // 画面側の入口（web/main.js の drumclackShowSection）を呼ぶだけ。画面に権限は要らない。
+        log_if_failed(
+            "eval",
+            window.eval(format!("window.drumclackShowSection && window.drumclackShowSection({section:?})")),
+        );
+    }
+}
+
+fn log_if_failed<E: std::fmt::Display>(step: &str, result: Result<(), E>) {
+    if let Err(error) = result {
+        eprintln!("[drumclack] 窓の操作に失敗しました（{step}）: {error}");
     }
 }
 
@@ -127,6 +142,13 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(handle_menu_event)
         .build(app)?;
 
+    #[cfg(target_os = "macos")]
+    let app_menu = {
+        let app_menu = crate::app_menu::setup(app, text)?;
+        app.on_menu_event(crate::app_menu::handle_menu_event);
+        app_menu
+    };
+
     app.manage(Arc::new(Tray {
         icon,
         enabled,
@@ -134,6 +156,8 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         open_play,
         autostart,
         quit,
+        #[cfg(target_os = "macos")]
+        app_menu,
         rendered: Mutex::new(Some((icon_state, lang))),
     }));
     Ok(())
@@ -172,6 +196,8 @@ pub fn refresh(app: &AppHandle) {
         let _ = tray.open_play.set_text(text.open_play);
         let _ = tray.autostart.set_text(text.launch_at_login);
         let _ = tray.quit.set_text(text.quit);
+        #[cfg(target_os = "macos")]
+        tray.app_menu.set_text(text);
     }
     *rendered = Some((icon_state, lang));
 }

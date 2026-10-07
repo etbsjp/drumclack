@@ -8,6 +8,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "macos")]
+mod app_menu;
 mod assignment;
 mod audio;
 mod drums;
@@ -74,8 +76,17 @@ fn open_input_monitoring_settings() -> Result<(), String> {
 /// アプリ自身を起動し直す（画面用の命令その5）。入力監視の許可は、起動し直すまで反映されない。
 /// `async` にして、メインスレッド以外から呼ぶ。そうすると終了の処理（二重起動の見張りの後片付け）を
 /// 通ってから起動し直すので、新しく起動した方が「すでに動いている」と判断して消えることがない。
+/// 起動し直す直前に「次の起動では窓を出す」印を残す（`first_sound_done` が真でも、起動し直した利用者に窓を見せるため）。
 #[tauri::command]
 async fn restart_app(app: tauri::AppHandle) {
+    match app.path().app_config_dir() {
+        Ok(dir) => {
+            if let Err(error) = resident::mark_show_window_next_launch(&dir) {
+                eprintln!("[drumclack] 起動し直しの印を残せませんでした: {error}");
+            }
+        }
+        Err(error) => eprintln!("[drumclack] 設定フォルダが分からず、起動し直しの印を残せませんでした: {error}"),
+    }
     app.restart()
 }
 
@@ -114,6 +125,8 @@ fn main() {
             // 既定で動き、保存だけ行わない。音量・割り当て・オン／オフは読み込み時に鳴らす側へ反映される。
             // 割り当てを反映してからキー監視を始める（起動直後の打鍵が既定で鳴らないように）。
             let config_dir = app.path().app_config_dir().ok();
+            // 「窓のボタンから起動し直した」印は、起動のたびにここで必ず読んで消す。
+            let mark_dir = config_dir.clone();
             let store = Arc::new(SettingsStore::open_with(
                 config_dir,
                 app_state.audio_engine.clone(),
@@ -134,7 +147,8 @@ fn main() {
             let first_sound_done = store.get().settings.first_sound_done;
             tray::apply_launch_visibility(
                 app.handle(),
-                resident::show_window_at_launch(
+                resident::decide_window_at_launch(
+                    mark_dir.as_deref(),
                     first_sound_done,
                     app_state.input_permission_ok(),
                     app_state.audio_ok(),
@@ -162,6 +176,16 @@ fn main() {
                 tray::hide_main_window(window.app_handle());
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running drumclack");
+        .build(tauri::generate_context!())
+        .expect("error while building drumclack")
+        .run(|app, event| {
+            // Finder・Spotlight・Dock からもう一度開かれたとき（Mac）。窓が出ていなければ設定の窓を出す。
+            // 二重起動の合図（single-instance）は、同じアプリを開き直しただけでは届かないため、ここで受ける。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
+                tray::show_main_window(app, Some("settings"));
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
