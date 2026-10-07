@@ -45,3 +45,29 @@ pub fn check_input_monitoring() -> &'static str {
 pub fn check_input_monitoring() -> &'static str {
     "unknown"
 }
+
+/// 入力監視の設定画面を開く（macOS）。シェルを通さず、`/usr/bin/open`（絶対パス）に URL を引数として渡す。
+/// 設定を変えるのは利用者で、このアプリは画面を開くだけ。
+#[cfg(target_os = "macos")]
+pub fn open_input_monitoring_settings() -> Result<(), String> {
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg(INPUT_MONITORING_SETTINGS_URL)
+        .status()
+        .map_err(|error| format!("open を起動できませんでした: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("open が失敗しました: {status}"))
+    }
+}
+
+/// macOS 以外には入力監視の設定が無い。
+#[cfg(not(target_os = "macos"))]
+pub fn open_input_monitoring_settings() -> Result<(), String> {
+    Err("この OS には入力監視の設定がありません".to_string())
+}
+
+/// システム設定の「プライバシーとセキュリティ > 入力監視」を直接開く URL。
+#[cfg(target_os = "macos")]
+const INPUT_MONITORING_SETTINGS_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";

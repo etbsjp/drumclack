@@ -33,6 +33,16 @@
       return tauri().core.invoke("update_settings", { settings: patch });
     },
 
+    /** macOS の入力監視の設定画面を開く（許可を変えるのは利用者）。 */
+    openInputMonitoringSettings() {
+      return tauri().core.invoke("open_input_monitoring_settings");
+    },
+
+    /** アプリ自身を起動し直す。成功すると、この窓ごと終了するので返事は来ない。 */
+    restartApp() {
+      return tauri().core.invoke("restart_app");
+    },
+
     /**
      * Rust からのイベントを受け取る。解除する関数を返す。
      * 使うイベントを足すときは、capabilities に `core:event:allow-listen` も足す。

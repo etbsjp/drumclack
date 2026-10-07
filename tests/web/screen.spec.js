@@ -7,6 +7,7 @@ const {
   SAMPLE_SETTINGS,
   DEFAULT_SETTINGS,
   STATUS_OK,
+  STATUS_NO_SOUND_YET,
   STATUS_PERMISSION_DENIED,
   STATUS_PERMISSION_UNKNOWN,
   STATUS_AUDIO_FAILED,
@@ -14,6 +15,7 @@ const {
   updateCalls,
   allCalls,
   setStatus,
+  changeSettingsOnRustSide,
   readWeb,
 } = require("./helpers");
 
@@ -90,7 +92,7 @@ test.describe("状態の帯", () => {
     await expect(id(page, "status-band")).toHaveAttribute("data-state", "error");
     const issue = id(page, "status-issue-permission");
     await expect(issue).toContainText(ja["status.permission.denied"]);
-    await expect(issue).toContainText(ja["status.permission.action"]);
+    await expect(issue).toContainText(ja["status.permission.steps"]);
     await expect(id(page, "status-ok")).toHaveCount(0);
     await expect(id(page, "status-issue-audio")).toHaveCount(0);
   });
@@ -100,7 +102,7 @@ test.describe("状態の帯", () => {
 
     await expect(id(page, "status-band")).toHaveAttribute("data-state", "warn");
     await expect(id(page, "status-issue-permission")).toContainText(ja["status.permission.unknown"]);
-    await expect(id(page, "status-issue-permission")).toContainText(ja["status.permission.action"]);
+    await expect(id(page, "status-issue-permission")).toContainText(ja["status.permission.steps"]);
   });
 
   test("音声デバイス失敗: 次の操作を先に、内部のエラー文字列は詳細として弱く出す", async ({ page }) => {
@@ -170,6 +172,227 @@ test.describe("状態の帯", () => {
 
     await setStatus(page, STATUS_OK);
     await expect(id(page, "test-mode")).toBeHidden();
+  });
+});
+
+// ============================================================================
+// 許可の案内（未許可／許可済みで未発音／発音済みの3状態）
+// ============================================================================
+
+test.describe("許可の案内", () => {
+  const stepTexts = (page) => id(page, "status-issue-permission").locator("ol > li > span:first-child");
+
+  test("未許可（Mac）: 3段の手順（設定を開く・起動し直す・キーを押す）と、削除して追加し直す案内を出す", async ({ page }) => {
+    await openApp(page, { status: { ...STATUS_PERMISSION_DENIED, last_play_ms: null } });
+
+    await expect(stepTexts(page)).toHaveText([
+      ja["status.permission.stepOpen"],
+      ja["status.permission.stepRestart"],
+      ja["status.permission.stepPress"],
+    ]);
+    await expect(id(page, "status-action-openSettings")).toHaveText(ja["status.permission.stepOpen.button"]);
+    await expect(id(page, "status-action-restart")).toHaveText(ja["status.permission.stepRestart.button"]);
+    await expect(id(page, "status-note-permission")).toHaveText(ja["status.permission.reset"]);
+    await expect(id(page, "status-issue-first-sound")).toHaveCount(0);
+    await expect(id(page, "status-ok")).toHaveCount(0);
+  });
+
+  test("「入力監視の設定を開く」を押すと open_input_monitoring_settings、「起動し直す」で restart_app を呼ぶ", async ({ page }) => {
+    await openApp(page, { status: STATUS_PERMISSION_DENIED });
+
+    await id(page, "status-action-openSettings").click();
+    await expect.poll(async () => (await allCalls(page)).map((c) => c.cmd)).toContain("open_input_monitoring_settings");
+    expect((await allCalls(page)).some((c) => c.cmd === "restart_app")).toBe(false);
+
+    await id(page, "status-action-restart").click();
+    await expect.poll(async () => (await allCalls(page)).map((c) => c.cmd)).toContain("restart_app");
+    // 押した直後に「起動し直しています」を出し、続けて押せない（二重に起動し直さない）。焦点は残る。
+    await expect(id(page, "status-step-progress-restart")).toHaveText(ja["status.permission.restarting"]);
+    await expect(id(page, "status-action-restart")).toHaveAttribute("aria-disabled", "true");
+    await expect(id(page, "status-action-restart")).toHaveAttribute("aria-busy", "true");
+    await expect(id(page, "status-action-restart")).toBeFocused();
+    const restarts = async () => (await allCalls(page)).filter((c) => c.cmd === "restart_app").length;
+    await id(page, "status-action-restart").click({ force: true });
+    await page.waitForTimeout(500);
+    expect(await restarts()).toBe(1);
+  });
+
+  test("設定を開けなかった・起動し直せなかったときは、自分で行う方法を出し、ボタンは押し直せる", async ({ page }) => {
+    await openApp(page, { status: STATUS_PERMISSION_DENIED, failOpenSettings: true, failRestart: true });
+    const issue = id(page, "status-issue-permission");
+
+    await id(page, "status-action-openSettings").click();
+    // 失敗の文は、失敗したボタンの項目の中（直下）に、弱い装飾なしで出る。
+    await expect(id(page, "status-step-error-openSettings")).toHaveText(ja["status.permission.failed.open"]);
+    await expect(issue.locator(".detail-text")).toHaveCount(0);
+
+    await id(page, "status-action-restart").click();
+    await expect(id(page, "status-step-error-restart")).toHaveText(ja["status.permission.failed.restart"]);
+    await expect(id(page, "status-step-error-openSettings")).toHaveCount(0);
+    await expect(id(page, "status-action-restart")).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  test("許可済みで未発音（Mac）: 許可の手順は消え、「何かキーを押してください」だけを出す", async ({ page }) => {
+    await openApp(page, { status: STATUS_NO_SOUND_YET });
+
+    const issue = id(page, "status-issue-first-sound");
+    await expect(issue).toContainText(ja["status.firstSound.message"]);
+    await expect(issue).toContainText(ja["status.firstSound.action"]);
+    await expect(id(page, "status-band")).toHaveAttribute("data-state", "warn");
+    await expect(id(page, "status-issue-permission")).toHaveCount(0);
+    await expect(page.locator('[data-testid^="status-action-"]')).toHaveCount(0);
+    await expect(id(page, "status-ok")).toHaveCount(0);
+  });
+
+  test("Windows: 許可の手順は出さず、未発音のときだけ「何かキーを押してください」を出す", async ({ page }) => {
+    await openApp(page, { status: { ...STATUS_NO_SOUND_YET, platform: "windows", permission: null } });
+
+    await expect(id(page, "status-issue-first-sound")).toContainText(ja["status.firstSound.action"]);
+    await expect(id(page, "status-issue-permission")).toHaveCount(0);
+    await expect(page.locator('[data-testid^="status-action-"]')).toHaveCount(0);
+
+    await setStatus(page, { ...STATUS_OK, platform: "windows", permission: null });
+    await expect(id(page, "status-first-sound-done")).toBeVisible();
+  });
+
+  test("発音済み: 設定の first_sound_done が真なら、今回まだ鳴っていなくても正常の1行", async ({ page }) => {
+    await openApp(page, {
+      status: STATUS_NO_SOUND_YET,
+      settings: { ...DEFAULT_SETTINGS, first_sound_done: true },
+    });
+
+    await expect(id(page, "status-ok")).toHaveText(ja["status.ok"]);
+    await expect(id(page, "status-issue-first-sound")).toHaveCount(0);
+    await expect(id(page, "status-band")).toHaveAttribute("data-state", "ok");
+  });
+
+  test("許可が外れたら、発音済みでも未許可の手順を出す", async ({ page }) => {
+    await openApp(page, {
+      status: STATUS_PERMISSION_DENIED,
+      settings: { ...DEFAULT_SETTINGS, first_sound_done: true },
+    });
+
+    await expect(id(page, "status-issue-permission")).toBeVisible();
+    await expect(id(page, "status-ok")).toHaveCount(0);
+  });
+
+  test("OS の判定が未許可のままでも、キーのイベントが届いていれば許可済みとして扱う", async ({ page }) => {
+    await openApp(page, { status: { ...STATUS_PERMISSION_DENIED, last_play_ms: null } });
+    await expect(id(page, "status-issue-permission")).toBeVisible();
+
+    await setStatus(page, { ...STATUS_PERMISSION_DENIED, last_play_ms: null, key_events_seen: true });
+    await expect(id(page, "status-issue-permission")).toHaveCount(0);
+    await expect(id(page, "status-issue-first-sound")).toBeVisible();
+
+    await id(page, "status-details").locator("summary").click();
+    await expect(id(page, "detail-permission")).toHaveText(ja["status.details.permission.granted"]);
+  });
+
+  test("案内が出たあとに鳴ると、「鳴りました」の完了表示になる", async ({ page }) => {
+    await openApp(page, { status: STATUS_PERMISSION_DENIED });
+    await expect(id(page, "status-issue-permission")).toBeVisible();
+
+    // 起動し直して許可が効き、まだ鳴らない（案内は「キーを押す」だけになる）。
+    await setStatus(page, STATUS_NO_SOUND_YET);
+    await expect(id(page, "status-issue-first-sound")).toBeVisible();
+
+    // 鳴った。
+    await setStatus(page, STATUS_OK);
+    await expect(id(page, "status-first-sound-done")).toHaveText(ja["status.firstSound.done"]);
+    await expect(id(page, "status-band")).toHaveAttribute("data-state", "ok");
+    await expect(id(page, "status-issue-first-sound")).toHaveCount(0);
+  });
+
+  test("案内の文言は英語にも出る（言語の設定に従う）", async ({ page }) => {
+    await openApp(page, {
+      status: STATUS_PERMISSION_DENIED,
+      settings: { ...DEFAULT_SETTINGS, language: "en" },
+    });
+
+    await expect(id(page, "status-action-restart")).toHaveText(en["status.permission.stepRestart.button"]);
+    await expect(id(page, "status-note-permission")).toHaveText(en["status.permission.reset"]);
+  });
+});
+
+// ============================================================================
+// Rust 側で変わった設定への追従（メニュー／トレイで切り替えたオン／オフなど）
+// ============================================================================
+
+test.describe("設定の追従", () => {
+  test("メニューでオン／オフを切り替えると、開いている窓のスイッチが追従する", async ({ page }) => {
+    await openApp(page);
+    await expect(id(page, "setting-enabled")).toBeChecked();
+
+    await changeSettingsOnRustSide(page, { enabled: false });
+    await expect(id(page, "setting-enabled")).not.toBeChecked({ timeout: 3000 });
+
+    await changeSettingsOnRustSide(page, { enabled: true });
+    await expect(id(page, "setting-enabled")).toBeChecked({ timeout: 3000 });
+    // 追従は画面からの更新を出さない（取り込むだけ）。
+    expect(await updateCalls(page)).toEqual([]);
+  });
+
+  test("Rust 側で first_sound_done が真になったら、案内が消える", async ({ page }) => {
+    await openApp(page, { status: STATUS_NO_SOUND_YET });
+    await expect(id(page, "status-issue-first-sound")).toBeVisible();
+
+    await changeSettingsOnRustSide(page, { first_sound_done: true });
+    await expect(id(page, "status-first-sound-done")).toBeVisible({ timeout: 3000 });
+    await expect(id(page, "status-issue-first-sound")).toHaveCount(0);
+  });
+
+  test("動かしている最中のスライダーは、取り直した値で上書きしない（離すとその値を送る）", async ({ page }) => {
+    await openApp(page);
+    const volume = id(page, "setting-volume");
+
+    // 手を離す前（input だけ発火）に、Rust 側の音量が変わった。
+    await volume.evaluate((el) => {
+      el.value = "70";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await changeSettingsOnRustSide(page, { volume: 0.2, enabled: false });
+
+    // 他の項目は追従するが、操作中のスライダーは触らない。
+    await expect(id(page, "setting-enabled")).not.toBeChecked({ timeout: 3000 });
+    await expect(volume).toHaveValue("70");
+    await expect(id(page, "setting-volume-value")).toHaveText("70%");
+
+    // 離したら、操作した値を送る。
+    await volume.evaluate((el) => el.dispatchEvent(new Event("change", { bubbles: true })));
+    await expect.poll(() => updateCalls(page)).toEqual([{ cmd: "update_settings", args: { settings: { volume: 0.7 } } }]);
+    await expect(volume).toHaveValue("70");
+  });
+
+  test("スライダーから焦点が外れたら（change が来なくても）、操作の途中ではなくなり、取り直した値に揃う", async ({ page }) => {
+    await openApp(page);
+    const volume = id(page, "setting-volume");
+    await volume.focus();
+    await volume.evaluate((el) => {
+      el.value = "70";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await changeSettingsOnRustSide(page, { volume: 0.2 });
+    await page.waitForTimeout(1300);
+    await expect(volume).toHaveValue("70");
+
+    await volume.blur();
+    await expect(volume).toHaveValue("20", { timeout: 3000 });
+  });
+
+  test("取り直しに失敗しても、画面にエラーを出さず、次の取り直しで追従する", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => {
+      window.__fake.cfg.failSettings = true;
+    });
+    await changeSettingsOnRustSide(page, { enabled: false });
+    await page.waitForTimeout(1500);
+    await expect(id(page, "settings-error")).toBeHidden();
+    await expect(id(page, "setting-enabled")).toBeChecked();
+
+    await page.evaluate(() => {
+      window.__fake.cfg.failSettings = false;
+    });
+    await expect(id(page, "setting-enabled")).not.toBeChecked({ timeout: 3000 });
   });
 });
 

@@ -3,6 +3,8 @@
 // 設定の更新は「変えた項目だけ」を送る（全体を送り返すと、Rust 側の変更を巻き戻すため）。
 
 const POLL_INTERVAL_MS = 300;
+// 設定は、状態の取得 N 回に1回取り直す（メニュー／トレイで変えた設定を、数秒以内に窓へ映すため）。
+const SETTINGS_REFRESH_EVERY_POLLS = 3;
 
 const bridge = window.drumclackBridge;
 const i18n = window.drumclackI18n;
@@ -41,11 +43,63 @@ const view = {
   status: null, // 直近の状態のスナップショット
   statusError: null, // 状態の取得に失敗したときのエラー文字列
   issuesKey: "",
+  guideShown: false, // 発音の案内（許可の手順・何かキーを押す）をこの窓で出したか。鳴ったときの「完了」の表示に使う
+  actionError: null, // "open" | "restart" | null（案内のボタンを押して失敗したとき）
+  restarting: false, // 「起動し直す」を押したあと
+  settingsVersion: 0, // 画面から設定を送るたびに増やす。古い取り直しの結果を捨てる目印
+  pendingUpdates: 0, // Rust へ送っている最中の更新の数
+  refreshingSettings: false, // 設定を取り直している最中か（重ねて取らない）
+  editing: new Set(), // 操作の途中の項目（動かしている最中のスライダー）。取り直した値で上書きしない
+};
+
+// 案内のボタン。状態の帯は中身が変わったときだけ作り直すので、押したときの動きは名前で引く。
+const ACTIONS = {
+  openSettings: async () => {
+    try {
+      await bridge.openInputMonitoringSettings();
+      view.actionError = null;
+    } catch (err) {
+      console.error("入力監視の設定を開けませんでした", err);
+      view.actionError = "open";
+    }
+    renderStatus();
+  },
+  restart: async () => {
+    view.restarting = true;
+    view.actionError = null;
+    renderStatus();
+    try {
+      await bridge.restartApp();
+    } catch (err) {
+      console.error("起動し直せませんでした", err);
+      view.restarting = false;
+      view.actionError = "restart";
+      renderStatus();
+    }
+  },
 };
 
 // ============================================================================
 // 状態の帯
 // ============================================================================
+
+/**
+ * 入力監視の許可の状態。OS の判定は起動時のまま変わらないので、キーのイベントが実際に届いていれば
+ * 許可済みとみなす（OS の判定が未許可でも、届いたなら許可されている）。Windows など許可が無い OS は null。
+ */
+function effectivePermissionState() {
+  const permission = view.status && view.status.permission;
+  if (!permission) {
+    return null;
+  }
+  return view.status.key_events_seen ? "granted" : permission.state;
+}
+
+/** 一度でも鳴ったか。保存された印（以前の起動で鳴った）か、今回の起動で鳴った記録があれば真。 */
+function hasSoundedBefore() {
+  const saved = view.settings && view.settings.settings.first_sound_done === true;
+  return saved || (view.status != null && view.status.last_play_ms != null);
+}
 
 /** 今の状態から、帯に出す問題の一覧を作る（正常なら空）。 */
 function collectIssues() {
@@ -62,14 +116,32 @@ function collectIssues() {
   }
 
   const issues = [];
-  const permission = view.status && view.status.permission;
-  if (permission && permission.state !== "granted") {
-    const denied = permission.state === "denied";
+  const permissionState = effectivePermissionState();
+  const permissionMissing = permissionState != null && permissionState !== "granted";
+  if (permissionMissing) {
+    const denied = permissionState === "denied";
     issues.push({
       id: "permission",
       level: denied ? "error" : "warn",
       message: t(denied ? "status.permission.denied" : "status.permission.unknown"),
-      action: t("status.permission.action"),
+      action: t("status.permission.steps"),
+      // 許可 → 起動し直す → キーを押す、の3段。ボタンは名前（ACTIONS）で引く。
+      steps: [
+        {
+          text: t("status.permission.stepOpen"),
+          button: { name: "openSettings", label: t("status.permission.stepOpen.button") },
+          error: view.actionError === "open" ? t("status.permission.failed.open") : null,
+        },
+        {
+          text: t("status.permission.stepRestart"),
+          button: { name: "restart", label: t("status.permission.stepRestart.button"), busy: view.restarting },
+          // 押した直後から、起動し直している最中だと文で伝える（失敗したら失敗の文に替わる）。
+          progress: view.restarting ? t("status.permission.restarting") : null,
+          error: view.actionError === "restart" ? t("status.permission.failed.restart") : null,
+        },
+        { text: t("status.permission.stepPress") },
+      ],
+      note: t("status.permission.reset"),
     });
   }
 
@@ -82,6 +154,16 @@ function collectIssues() {
       action: t("status.audio.action"),
       // Rust が返す内部のエラー文字列。次の操作より弱い「詳細」として残す。
       detail: t("status.audio.detail", { message: audio.message }),
+    });
+  }
+
+  // 許可が足りている（許可の無い OS を含む）のに、まだ一度も鳴っていない。次の操作は「キーを押す」だけ。
+  if (view.status && !permissionMissing && !(audio && !audio.ok) && !hasSoundedBefore()) {
+    issues.push({
+      id: "first-sound",
+      level: "warn",
+      message: t("status.firstSound.message"),
+      action: t("status.firstSound.action"),
     });
   }
   return issues;
@@ -103,6 +185,55 @@ function issueElement(issue) {
     action.textContent = issue.action;
     li.appendChild(action);
   }
+  if (issue.steps) {
+    const list = document.createElement("ol");
+    list.className = "issue-steps";
+    for (const step of issue.steps) {
+      const item = document.createElement("li");
+      const text = document.createElement("span");
+      text.textContent = step.text;
+      item.appendChild(text);
+      if (step.button) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "issue-button";
+        button.dataset.testid = `status-action-${step.button.name}`;
+        button.textContent = step.button.label;
+        // disabled にすると焦点が外れるので、押せない間は aria-disabled と aria-busy で表す（押しても何もしない）。
+        if (step.button.busy) {
+          button.setAttribute("aria-disabled", "true");
+          button.setAttribute("aria-busy", "true");
+        }
+        button.addEventListener("click", () => {
+          if (!step.button.busy) ACTIONS[step.button.name]();
+        });
+        item.appendChild(button);
+      }
+      // 進行中の文と失敗の文は、手順の文と同じ強さで、そのボタンの直下に出す。
+      for (const [key, role] of [
+        ["progress", "status"],
+        ["error", "alert"],
+      ]) {
+        if (step[key]) {
+          const message = document.createElement("span");
+          message.className = "issue-step-message";
+          message.dataset.testid = `status-step-${key}-${step.button.name}`;
+          message.setAttribute("role", role);
+          message.textContent = step[key];
+          item.appendChild(message);
+        }
+      }
+      list.appendChild(item);
+    }
+    li.appendChild(list);
+  }
+  if (issue.note) {
+    const note = document.createElement("span");
+    note.className = "issue-note";
+    note.dataset.testid = `status-note-${issue.id}`;
+    note.textContent = issue.note;
+    li.appendChild(note);
+  }
   if (issue.detail) {
     const detail = document.createElement("span");
     detail.className = "detail-text";
@@ -116,6 +247,11 @@ function issueElement(issue) {
 function renderBand() {
   const checking = view.status == null && view.statusError == null;
   const issues = collectIssues();
+  // 案内を出したあとに鳴ったら、正常の文の代わりに「鳴りました」を出す（この窓を開いている間）。
+  if (issues.some((issue) => issue.id === "permission" || issue.id === "first-sound")) {
+    view.guideShown = true;
+  }
+  const showSoundDone = issues.length === 0 && view.guideShown;
 
   let state = "ok";
   if (checking) {
@@ -128,11 +264,13 @@ function renderBand() {
   els.band.dataset.state = state;
 
   // 読み上げ（aria-live）が毎回走らないよう、中身が変わったときだけ作り直す。
-  const key = JSON.stringify([i18n.language, state, issues]);
+  const key = JSON.stringify([i18n.language, state, issues, showSoundDone]);
   if (key === view.issuesKey) {
     return;
   }
   view.issuesKey = key;
+  // 作り直すと焦点が body に落ちるので、焦点のあったボタンを、作り直したあとの同じ名前のボタンへ戻す。
+  const focusedTestId = els.issues.contains(document.activeElement) ? document.activeElement.dataset.testid : null;
   els.issues.replaceChildren();
 
   if (checking) {
@@ -143,13 +281,17 @@ function renderBand() {
   } else if (issues.length === 0) {
     const li = document.createElement("li");
     li.className = "status-issue state-ok";
-    li.dataset.testid = "status-ok";
-    li.textContent = t("status.ok");
+    li.dataset.testid = showSoundDone ? "status-first-sound-done" : "status-ok";
+    li.textContent = t(showSoundDone ? "status.firstSound.done" : "status.ok");
     els.issues.appendChild(li);
   } else {
     for (const issue of issues) {
       els.issues.appendChild(issueElement(issue));
     }
+  }
+  if (focusedTestId) {
+    const again = $(focusedTestId);
+    if (again && els.issues.contains(again)) again.focus();
   }
 }
 
@@ -171,10 +313,10 @@ function renderDetails() {
   }
 
   // Windows など、権限の概念が無いプラットフォームでは行ごと隠す。
-  const permission = status.permission;
-  els.detailPermissionRow.hidden = !permission;
-  if (permission) {
-    const known = ["granted", "denied"].includes(permission.state) ? permission.state : "unknown";
+  const permissionState = effectivePermissionState();
+  els.detailPermissionRow.hidden = permissionState == null;
+  if (permissionState != null) {
+    const known = ["granted", "denied"].includes(permissionState) ? permissionState : "unknown";
     const label = {
       granted: t("status.details.permission.granted"),
       denied: t("status.details.permission.denied"),
@@ -212,6 +354,8 @@ function renderStatus() {
   renderDetails();
 }
 
+let pollCount = 0;
+
 async function poll() {
   try {
     view.status = await bridge.getStatus();
@@ -221,6 +365,11 @@ async function poll() {
     view.statusError = String(err);
   }
   renderStatus();
+  pollCount += 1;
+  if (pollCount % SETTINGS_REFRESH_EVERY_POLLS === 0) {
+    // 待たない（設定の取得が遅くても、状態の取得を止めない）。重なって走らせないよう中で見張る。
+    refreshSettings();
+  }
   setTimeout(poll, POLL_INTERVAL_MS);
 }
 
@@ -287,8 +436,12 @@ function renderControls() {
 
   const settings = snapshot.settings;
   els.enabled.checked = settings.enabled;
-  setSliderValue(els.volume, els.volumeValue, percent(settings.volume));
-  setSliderValue(els.dynamics, els.dynamicsValue, percent(settings.dynamics));
+  if (!view.editing.has("volume")) {
+    setSliderValue(els.volume, els.volumeValue, percent(settings.volume));
+  }
+  if (!view.editing.has("dynamics")) {
+    setSliderValue(els.dynamics, els.dynamicsValue, percent(settings.dynamics));
+  }
   els.language.value = settings.language;
   els.layout.value = settings.keyboard_layout;
   document.documentElement.dataset.keyboardLayout = resolveLayout(settings.keyboard_layout);
@@ -316,6 +469,9 @@ let updateQueue = Promise.resolve();
 
 /** 変えた項目だけを Rust へ送る。 */
 function sendUpdate(patch) {
+  // 送っている間と、その直後に始まる取り直しの結果は、古い値を含むので使わない。
+  view.settingsVersion += 1;
+  view.pendingUpdates += 1;
   updateQueue = updateQueue.then(async () => {
     try {
       const snapshot = await bridge.updateSettings(patch);
@@ -327,9 +483,41 @@ function sendUpdate(patch) {
       view.settingsError = "update";
       renderControls();
       renderNotices();
+    } finally {
+      view.pendingUpdates -= 1;
+      view.settingsVersion += 1;
     }
   });
   return updateQueue;
+}
+
+/**
+ * Rust 側で変わった設定（メニュー／トレイのオン／オフ、初めて鳴った印など）を取り込む。
+ * 次の場合は取り込まない: 画面から送っている最中／取得中に画面から送った（取得した値が古い）／
+ * 取得した設定が今の画面と同じ。操作の途中のスライダーは、取り込んでも上書きしない（renderControls）。
+ */
+async function refreshSettings() {
+  if (view.pendingUpdates > 0 || view.refreshingSettings) {
+    return;
+  }
+  const version = view.settingsVersion;
+  let snapshot;
+  view.refreshingSettings = true;
+  try {
+    snapshot = await bridge.getSettings();
+  } catch (err) {
+    // 取り直しの失敗は黙って次に回す（起動時の読み込みの失敗とは別。画面には出さない）。
+    return;
+  } finally {
+    view.refreshingSettings = false;
+  }
+  if (!snapshot || !snapshot.settings || version !== view.settingsVersion || view.pendingUpdates > 0) {
+    return;
+  }
+  if (JSON.stringify(snapshot) === JSON.stringify(view.settings)) {
+    return;
+  }
+  await applySettings(snapshot);
 }
 
 function bindSettings() {
@@ -349,9 +537,23 @@ function bindSettings() {
     [els.dynamics, els.dynamicsValue, "dynamics"],
   ]) {
     slider.addEventListener("input", () => {
+      view.editing.add(key);
       setSliderValue(slider, output, slider.value);
     });
-    slider.addEventListener("change", () => sendUpdate({ [key]: Number(slider.value) / 100 }));
+    // 離す・中断・焦点が外れたときも、操作の途中ではなくする（change が来ないまま editing が残らないように）。
+    // pointerup は change の直前に来るので、少し遅らせる（先に外すと、取り直しが値を戻して change が古い値を送りうる）。
+    // 外したあとは描き直して、取り込み済みの Rust 側の値に揃える。
+    const stopEditing = () => {
+      if (view.editing.delete(key)) renderControls();
+    };
+    slider.addEventListener("pointerup", () => setTimeout(stopEditing, 100));
+    slider.addEventListener("pointercancel", stopEditing);
+    slider.addEventListener("blur", stopEditing);
+    slider.addEventListener("change", () => {
+      // 手を離したので操作の途中ではない。送っている間は取り直しも止まり、返ってきた値で描き直される。
+      view.editing.delete(key);
+      sendUpdate({ [key]: Number(slider.value) / 100 });
+    });
   }
 
   els.language.addEventListener("change", () => sendUpdate({ language: els.language.value }));

@@ -3,5 +3,6 @@
   "identifier": "default",
   "description": "画面（main 窓）が呼べる命令。使うものだけを列挙する。",
   "windows": ["main"],
-  "permissions": ["allow-get-status", "allow-get-settings", "allow-update-settings", "allow-preview-sound"]
+  "permissions": ["allow-get-status", "allow-get-settings", "allow-update-settings", "allow-preview-sound",
+    "allow-open-input-monitoring-settings", "allow-restart-app"]
 }

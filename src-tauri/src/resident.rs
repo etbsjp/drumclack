@@ -415,7 +415,7 @@ mod tests {
     // ---- 画面に権限を出さない・自動で登録しない ----
 
     #[test]
-    fn the_screen_capability_lists_only_the_four_commands_and_no_plugin_permission() {
+    fn the_screen_capability_lists_only_the_six_commands_and_no_plugin_permission() {
         const CAPABILITY: &str = include_str!("../capabilities/default.json");
         let value: serde_json::Value = serde_json::from_str(CAPABILITY).unwrap();
         let mut permissions: Vec<&str> =
@@ -423,7 +423,14 @@ mod tests {
         permissions.sort();
         assert_eq!(
             permissions,
-            ["allow-get-settings", "allow-get-status", "allow-preview-sound", "allow-update-settings"]
+            [
+                "allow-get-settings",
+                "allow-get-status",
+                "allow-open-input-monitoring-settings",
+                "allow-preview-sound",
+                "allow-restart-app",
+                "allow-update-settings"
+            ]
         );
         assert!(!CAPABILITY.contains("autostart"), "ログイン時の起動の権限を画面に出していない");
         assert!(!CAPABILITY.contains("single-instance"));

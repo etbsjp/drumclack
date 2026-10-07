@@ -65,6 +65,20 @@ fn preview_sound(app_state: tauri::State<'_, Arc<AppState>>, sound: String) -> R
     assignment::preview(engine, &sound)
 }
 
+/// 入力監視の設定画面を開く（画面用の命令その4）。macOS 以外ではエラーを返す。
+#[tauri::command]
+fn open_input_monitoring_settings() -> Result<(), String> {
+    permission::open_input_monitoring_settings()
+}
+
+/// アプリ自身を起動し直す（画面用の命令その5）。入力監視の許可は、起動し直すまで反映されない。
+/// `async` にして、メインスレッド以外から呼ぶ。そうすると終了の処理（二重起動の見張りの後片付け）を
+/// 通ってから起動し直すので、新しく起動した方が「すでに動いている」と判断して消えることがない。
+#[tauri::command]
+async fn restart_app(app: tauri::AppHandle) {
+    app.restart()
+}
+
 fn main() {
     tauri::Builder::default()
         // 二重に起動したら、動いている方の設定の窓を開く（渡された引数・作業フォルダは見ない）。
@@ -137,7 +151,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![get_status,
             get_settings,
             update_settings,
-            preview_sound
+            preview_sound,
+            open_input_monitoring_settings,
+            restart_app
         ])
         .on_window_event(|window, event| {
             // 窓を閉じても終了せず、隠して常駐を続ける（Mac は Dock からも外す）。
