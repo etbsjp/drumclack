@@ -472,3 +472,397 @@ select {
 .issue-step-message {
   flex-basis: 100%;
 }
+
+/* ==========================================================================
+   割り当ての区画（キーボードの絵・グループの選択欄・個別の上書き）
+   ========================================================================== */
+
+/* 音ごとの色。色だけに頼らず、各キーに略号の文字も出す。文字色は --fg（背景に対し 4.5:1 以上） */
+:root {
+  --snd-kick: #f4b6b0;
+  --snd-snare: #f6cf9a;
+  --snd-hat-closed: #f2e68f;
+  --snd-hat-open: #b9e29a;
+  --snd-clap: #9fded2;
+  --snd-rim: #a6d0f2;
+  --snd-tom-low: #c5b4f0;
+  --snd-tom-high: #f2b3da;
+  --snd-none: #e6e6e6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --snd-kick: #7a2d27;
+    --snd-snare: #7a4b17;
+    --snd-hat-closed: #6b6217;
+    --snd-hat-open: #3d6b21;
+    --snd-clap: #1f6a5c;
+    --snd-rim: #234f7a;
+    --snd-tom-low: #4c3a82;
+    --snd-tom-high: #7a2f62;
+    --snd-none: #2b2c30;
+  }
+}
+
+:root[data-theme="dark"] {
+  --snd-kick: #7a2d27;
+  --snd-snare: #7a4b17;
+  --snd-hat-closed: #6b6217;
+  --snd-hat-open: #3d6b21;
+  --snd-clap: #1f6a5c;
+  --snd-rim: #234f7a;
+  --snd-tom-low: #4c3a82;
+  --snd-tom-high: #7a2f62;
+  --snd-none: #2b2c30;
+}
+
+[data-sound="kick"] {
+  --snd: var(--snd-kick);
+}
+[data-sound="snare"] {
+  --snd: var(--snd-snare);
+}
+[data-sound="hat_closed"] {
+  --snd: var(--snd-hat-closed);
+}
+[data-sound="hat_open"] {
+  --snd: var(--snd-hat-open);
+}
+[data-sound="clap"] {
+  --snd: var(--snd-clap);
+}
+[data-sound="rim"] {
+  --snd: var(--snd-rim);
+}
+[data-sound="tom_low"] {
+  --snd: var(--snd-tom-low);
+}
+[data-sound="tom_high"] {
+  --snd: var(--snd-tom-high);
+}
+[data-sound="none"] {
+  --snd: var(--snd-none);
+}
+
+/* 全体・ツールバー
+   ========================================================================== */
+
+.assign {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.assign[hidden] {
+  display: none;
+}
+
+.assign[data-disabled="true"] {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.assign-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 24px;
+}
+
+.segmented {
+  display: inline-flex;
+}
+
+.segmented button {
+  font: inherit;
+  padding: 4px 14px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.segmented button + button {
+  margin-left: -1px;
+}
+
+.segmented button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.segmented button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.segmented button[aria-checked="true"] {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+.assign-reset:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px; /* 見出しと、その切り替えは近づける */
+}
+
+.toolbar-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.toolbar-reset {
+  margin-left: auto;
+}
+
+/* 確認と結果は同じ場所に重ねる。高さを常に確保して、出入りで絵がずれないようにする */
+.assign-band {
+  display: grid;
+  min-height: 58px; /* 確認の文が2行になっても収まる高さ */
+  align-items: center;
+}
+
+.assign-hint[hidden] {
+  display: none;
+}
+
+.assign-band > * {
+  grid-area: 1 / 1;
+}
+
+.assign-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-left: 6px solid var(--warn-fg);
+  border-radius: 6px;
+}
+
+.assign-confirm[hidden] {
+  display: none;
+}
+
+.assign-confirm-text {
+  flex: 1 1 0;
+  min-width: 16em;
+  margin: 0;
+}
+
+.assign-feedback {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.assign-hint {
+  margin: 0;
+}
+
+/* キーボードの絵
+   ========================================================================== */
+
+/* 枠の四辺に余白を取る。overflow で縦も切れるため、端のキーのフォーカス枠（2px＋離れ2px）が切れないようにする */
+.keyboard-scroll {
+  overflow-x: auto;
+  padding: 6px;
+}
+
+.keyboard {
+  --u: 36px; /* キー1個ぶん。23個ぶん（828px）で、900px の窓の幅に収まる */
+  position: relative;
+  width: calc(var(--board-w) * var(--u));
+  height: calc(var(--board-h) * var(--u));
+}
+
+.key {
+  position: absolute;
+  left: calc(var(--x) * var(--u) + 2px);
+  top: calc(var(--y) * var(--u) + 2px);
+  width: calc(var(--w) * var(--u) - 4px);
+  height: calc(var(--h) * var(--u) - 4px);
+  margin: 0;
+  padding: 1px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font: inherit;
+  line-height: 1.15;
+  color: var(--fg);
+  background: var(--snd, var(--snd-none));
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.key-label {
+  max-width: 100%;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.key-sound {
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* 個別に変えたキーの印。色ではなく、太い枠と角の丸い印で示す */
+.key[data-override="true"] {
+  border: 2px solid var(--accent);
+}
+
+.key[data-override="true"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* 音の略号の札（グループの選択欄・一覧・選択肢） */
+.chip {
+  display: inline-block;
+  min-width: 2.4em;
+  padding: 1px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--fg);
+  background: var(--snd, var(--snd-none));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* 選択肢
+   ========================================================================== */
+
+.key-menu {
+  position: fixed;
+  left: var(--menu-left, 0);
+  top: var(--menu-top, 0);
+  z-index: 10;
+  min-width: 14em;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+}
+
+.key-menu[hidden] {
+  display: none;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  border-color: var(--border);
+}
+
+.menu-item[aria-checked="true"] {
+  font-weight: 700;
+  border-color: var(--accent);
+}
+
+/* グループ10行の選択欄（2列×5行）・個別に変えたキーの一覧
+   ========================================================================== */
+
+.assign-heading {
+  margin: 12px 0 0;
+  font-size: 15px;
+}
+
+.group-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(5, auto);
+  grid-auto-flow: column;
+  gap: 8px 28px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.group-row {
+  display: grid;
+  grid-template-columns: 2.6em minmax(0, 1fr) 11.5em;
+  align-items: center;
+  gap: 8px;
+}
+
+.group-label {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.group-select {
+  width: 100%;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.group-row[data-changed="true"] .group-select {
+  border-color: var(--accent);
+  border-width: 2px;
+}
+
+.override-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 28px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.override-list[hidden] {
+  display: none;
+}
+
+.override-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.override-key {
+  font-weight: 700;
+}
+
+.override-sound {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}

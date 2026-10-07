@@ -33,6 +33,11 @@
       return tauri().core.invoke("update_settings", { settings: patch });
     },
 
+    /** 音の名前（`kick` など）を指定して1回鳴らす（試聴。オフ中でも鳴る）。 */
+    previewSound(sound) {
+      return tauri().core.invoke("preview_sound", { sound });
+    },
+
     /** macOS の入力監視の設定画面を開く（許可を変えるのは利用者）。 */
     openInputMonitoringSettings() {
       return tauri().core.invoke("open_input_monitoring_settings");

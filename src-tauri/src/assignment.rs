@@ -469,6 +469,49 @@ mod tests {
         assert_eq!(live.sound_name_for_key(pos("KeyA")), Some("hat_closed"));
     }
 
+    /// 画面（web/assign.js）が絵と色分けに使う元データが、この実装と同じ内容であること。
+    /// 画面側にグループと既定の音の写しを持つので、片方だけ変えるとここが落ちる。
+    #[test]
+    fn screen_key_data_matches_the_assignment_tables() {
+        let data: serde_json::Value =
+            serde_json::from_str(include_str!("../../web/key-data.json")).unwrap();
+
+        // 全キーの所属グループ（過不足なし）。
+        let groups = data["groups"].as_object().unwrap();
+        assert_eq!(groups.len(), KeyPosition::ALL.len());
+        for &position in KeyPosition::ALL {
+            let name = position.code_name();
+            assert_eq!(groups[name], group_of(position).name(), "{name} の所属グループ");
+        }
+
+        // グループの既定（組ごと）。
+        for (set_name, set) in [("typing", AssignmentSet::Typing), ("play", AssignmentSet::Play)] {
+            let defaults = data["groupDefaults"][set_name].as_object().unwrap();
+            assert_eq!(defaults.len(), KeyGroup::ALL.len());
+            for &group in KeyGroup::ALL {
+                assert_eq!(
+                    defaults[group.name()],
+                    default_group_sound(set, group).name(),
+                    "{set_name} の {} の既定",
+                    group.name()
+                );
+            }
+
+            // キーごとの既定（あるものだけ）。
+            let key_defaults = data["keyDefaults"][set_name].as_object().unwrap();
+            let expected: usize = KeyPosition::ALL
+                .iter()
+                .filter(|&&position| default_key_sound(set, position).is_some())
+                .count();
+            assert_eq!(key_defaults.len(), expected);
+            for &position in KeyPosition::ALL {
+                if let Some(sound) = default_key_sound(set, position) {
+                    assert_eq!(key_defaults[position.code_name()], sound.name());
+                }
+            }
+        }
+    }
+
     #[test]
     fn preview_plays_once_by_name_and_rejects_unknown_names() {
         let engine = AudioEngine::new(crate::drums::build_free_kit(48_000), 48_000);

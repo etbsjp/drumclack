@@ -421,6 +421,12 @@ function setSliderValue(slider, output, value) {
 }
 
 function renderControls() {
+  renderSettingsControls();
+  // 割り当ての区画も、設定が変わるたび・言語が変わるたびに描き直す（起動前は何もしない）。
+  window.drumclackAssign.render();
+}
+
+function renderSettingsControls() {
   const snapshot = view.settings;
 
   // 配列の「自動」は、今どちらで描くかを添える（「自動」だけでは、何が選ばれているか分からない）。
@@ -446,6 +452,15 @@ function renderControls() {
   els.layout.value = settings.keyboard_layout;
   document.documentElement.dataset.keyboardLayout = resolveLayout(settings.keyboard_layout);
 }
+
+/** 割り当ての区画（assign.js）へ、画面の状態と、設定の更新の入口を渡す。 */
+const assignContext = {
+  bridge,
+  i18n,
+  getSnapshot: () => view.settings,
+  resolveLayout,
+  sendUpdate: (patch) => sendUpdate(patch),
+};
 
 /** 設定のスナップショットを画面へ反映する。言語が変わったら対応表も読み替える。 */
 async function applySettings(snapshot) {
@@ -574,6 +589,9 @@ function bindTabs() {
       other.tabIndex = selected ? 0 : -1;
       document.getElementById(other.getAttribute("aria-controls")).hidden = !selected;
     }
+    // 開いていた選択肢は閉じ、出したばかりの区画は幅を測り直す。
+    window.drumclackAssign.close();
+    window.drumclackAssign.render();
   }
 
   // メニューバー／トレイの「演奏モードを開く」から、Rust が窓を出したあとに呼ぶ入口。
@@ -608,6 +626,8 @@ function bindTabs() {
 async function start() {
   bindTabs();
   bindSettings();
+  // 割り当ての元データ（key-data.json）の読み込み。失敗しても割り当ての区画だけが使えなくなる。
+  const assignReady = window.drumclackAssign.init(assignContext);
 
   let snapshot = null;
   try {
@@ -628,6 +648,7 @@ async function start() {
   if (snapshot) {
     view.settings = snapshot;
   }
+  await assignReady;
   renderControls();
   renderNotices();
   renderStatus();
