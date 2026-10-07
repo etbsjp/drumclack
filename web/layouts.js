@@ -109,9 +109,9 @@
       ["ShiftLeft", "Shift", 2.25], ...letters("ZXCVBNM"), ["Comma", ","], ["Period", "."], ["Slash", "/"], ["ShiftRight", "Shift", 2.75],
     ]);
     row(keys, 0, rowY(5), [
-      ["ControlLeft", "Ctrl", 1.25], ["MetaLeft", "Cmd/Win", 1.25], ["AltLeft", "Alt/Opt", 1.25],
-      ["Space", "Space", 6.25],
-      ["AltRight", "Alt/Opt", 1.25], ["MetaRight", "Cmd/Win", 1.25], ["ContextMenu", "Menu", 1.25], ["ControlRight", "Ctrl", 1.25],
+      ["ControlLeft", "Ctrl", 1.25], ["MetaLeft", "Cmd/Win", 1.5], ["AltLeft", "Alt/Opt", 1.25],
+      ["Space", "Space", 5.75],
+      ["AltRight", "Alt/Opt", 1.25], ["MetaRight", "Cmd/Win", 1.5], ["ContextMenu", "Menu", 1.25], ["ControlRight", "Ctrl", 1.25],
     ]);
     addClusters(keys);
     return keys;
@@ -134,9 +134,9 @@
       ["ShiftLeft", "Shift", 2.25], ...letters("ZXCVBNM"), ["Comma", ","], ["Period", "."], ["Slash", "/"], ["IntlRo", "_"], ["ShiftRight", "Shift", 1.75],
     ]);
     row(keys, 0, rowY(5), [
-      ["ControlLeft", "Ctrl", 1.25], ["MetaLeft", "Cmd/Win", 1.25], ["AltLeft", "Alt/Opt", 1.25],
-      ["NonConvert", "無変換", 1.25], ["Space", "Space", 3.75], ["Convert", "変換", 1.25], ["KanaMode", "かな", 1.25],
-      ["MetaRight", "Cmd/Win", 1.25], ["ContextMenu", "Menu", 1.25], ["ControlRight", "Ctrl", 1.25],
+      ["ControlLeft", "Ctrl", 1.25], ["MetaLeft", "Cmd/Win", 1.5], ["AltLeft", "Alt/Opt", 1.25],
+      ["NonConvert", "無変換", 1.25], ["Space", "Space", 3.25], ["Convert", "変換", 1.25], ["KanaMode", "かな", 1.25],
+      ["MetaRight", "Cmd/Win", 1.5], ["ContextMenu", "Menu", 1.25], ["ControlRight", "Ctrl", 1.25],
     ]);
     addClusters(keys);
     return keys;

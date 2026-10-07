@@ -607,12 +607,44 @@ select {
   opacity: 0.6;
 }
 
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px; /* 見出しと、その切り替えは近づける */
+}
+
+.toolbar-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.toolbar-reset {
+  margin-left: auto;
+}
+
+/* 確認と結果は同じ場所に重ねる。高さを常に確保して、出入りで絵がずれないようにする */
+.assign-band {
+  display: grid;
+  min-height: 58px; /* 確認の文が2行になっても収まる高さ */
+  align-items: center;
+}
+
+.assign-hint[hidden] {
+  display: none;
+}
+
+.assign-band > * {
+  grid-area: 1 / 1;
+}
+
 .assign-confirm {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
-  padding: 10px 14px;
+  padding: 5px 12px;
   border: 1px solid var(--border);
   border-left: 6px solid var(--warn-fg);
   border-radius: 6px;
@@ -623,7 +655,8 @@ select {
 }
 
 .assign-confirm-text {
-  flex: 1 1 100%;
+  flex: 1 1 0;
+  min-width: 16em;
   margin: 0;
 }
 
@@ -633,13 +666,6 @@ select {
   gap: 12px;
 }
 
-/* 空のときは場所を取らない（読み上げの領域は残す） */
-.assign-feedback[data-has-content="false"] {
-  height: 0;
-  margin-top: -12px;
-  overflow: hidden;
-}
-
 .assign-hint {
   margin: 0;
 }
@@ -647,9 +673,10 @@ select {
 /* キーボードの絵
    ========================================================================== */
 
+/* 枠の四辺に余白を取る。overflow で縦も切れるため、端のキーのフォーカス枠（2px＋離れ2px）が切れないようにする */
 .keyboard-scroll {
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding: 6px;
 }
 
 .keyboard {
@@ -683,7 +710,7 @@ select {
 
 .key-label {
   max-width: 100%;
-  font-size: 9px;
+  font-size: 10px;
   white-space: nowrap;
 }
 

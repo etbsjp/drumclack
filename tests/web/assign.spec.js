@@ -612,6 +612,182 @@ test.describe("打鍵を画面へ送らない", () => {
 });
 
 // ============================================================================
+// レビュー指摘への対応
+// ============================================================================
+
+test.describe("レビュー指摘への対応", () => {
+  test("端のキーのフォーカス枠が、絵の枠に切られない", async ({ page }) => {
+    for (const layout of ["us", "jis"]) {
+      await openAssign(page, { keyboard_layout: layout });
+      // キーボードで操作している状態にして、フォーカスの枠（2px＋離れ2px）が出る状態で測る。
+      await page.keyboard.press("Shift");
+      const results = await page.evaluate(() => {
+        const scroller = document.querySelector('[data-testid="keyboard-scroll"]');
+        // フォーカスで窓がスクロールしても測り直せるよう、枠の範囲はキーごとに取る。
+        const clipNow = () => {
+          const box = scroller.getBoundingClientRect();
+          return {
+            left: box.left + scroller.clientLeft,
+            top: box.top + scroller.clientTop,
+            right: box.left + scroller.clientLeft + scroller.clientWidth,
+            bottom: box.top + scroller.clientTop + scroller.clientHeight,
+          };
+        };
+        return ["Escape", "F1", "F12", "Tab", "ShiftLeft", "ControlLeft", "Space", "NumpadSubtract", "NumpadEnter", "Numpad0", "PrintScreen", "ArrowRight"].map(
+          (code) => {
+            const key = document.querySelector(`[data-testid="keyboard"] [data-code="${code}"]`);
+            key.focus();
+            const clip = clipNow();
+            const rect = key.getBoundingClientRect();
+            const style = getComputedStyle(key);
+            const reach = parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset);
+            return {
+              code,
+              hasOutline: style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0,
+              inside:
+                rect.left - reach >= clip.left &&
+                rect.top - reach >= clip.top &&
+                rect.right + reach <= clip.right &&
+                rect.bottom + reach <= clip.bottom,
+            };
+          },
+        );
+      });
+      for (const result of results) {
+        expect(result, `${layout} ${result.code}`).toEqual({ code: result.code, hasOutline: true, inside: true });
+      }
+    }
+  });
+
+  test("確認は alertdialog で、件数入りの本文と「直後に取り消せます」を読み上げ、Esc で閉じる", async ({ page }) => {
+    await openAssign(page, withOverrides);
+    await id(page, "assign-reset").click();
+    const dialog = id(page, "assign-reset-confirm");
+    await expect(dialog).toHaveAttribute("role", "alertdialog");
+    await expect(dialog).toHaveAttribute("aria-describedby", "assign-reset-text");
+    await expect(id(page, "assign-reset-text")).toContainText("直後に取り消せます");
+    await expect(id(page, "assign-reset-text")).toHaveAttribute("id", "assign-reset-text");
+
+    await page.keyboard.press("Escape");
+
+    await expect(dialog).toBeHidden();
+    await expect(id(page, "assign-reset")).toBeFocused();
+    expect(await updateCalls(page)).toEqual([]);
+  });
+
+  test("編集する組と配列の切り替えには、見える見出しがある", async ({ page }) => {
+    await openAssign(page);
+    const labels = page.locator(".toolbar-label");
+    await expect(labels).toHaveText(["編集する組", "キーボードの配列"]);
+    for (const testId of ["assign-set", "assign-layout"]) {
+      const labelledBy = await id(page, testId).getAttribute("aria-labelledby");
+      await expect(page.locator(`#${labelledBy}`)).toBeVisible();
+    }
+  });
+
+  test("確認や結果の帯が出入りしても、絵と選択欄が上下にずれない", async ({ page }) => {
+    await openAssign(page, withOverrides);
+    const top = async () => {
+      const boxes = await Promise.all([id(page, "keyboard").boundingBox(), id(page, "group-select-letters").boundingBox()]);
+      return boxes.map((box) => Math.round(box.y));
+    };
+    const initial = await top();
+
+    await id(page, "assign-reset").click();
+    expect(await top()).toEqual(initial);
+    await id(page, "assign-reset-confirm-button").click();
+    await expect(id(page, "assign-undo")).toBeVisible();
+    expect(await top()).toEqual(initial);
+    await id(page, "assign-undo").click();
+    await expect(id(page, "assign-feedback-text")).toContainText("取り消しました");
+    expect(await top()).toEqual(initial);
+  });
+
+  test("英語: 解除は Remove で「Restore defaults」と紛れず、複数形の括弧を使わない", async ({ page }) => {
+    await openAssign(page, { ...withOverrides, language: "en" });
+    await expect(id(page, "override-clear-KeyJ")).toHaveText("Remove");
+    await expect(id(page, "assign-reset")).toHaveText("Restore defaults");
+    await id(page, "assign-reset").click();
+    await expect(id(page, "assign-reset-text")).toContainText("Group changes: 1 / Individual keys: 2");
+    expect(await id(page, "assign-reset-text").textContent()).not.toMatch(/\(s\)/);
+    const english = JSON.parse(readWeb("i18n/en.json"));
+    expect(Object.values(english).filter((text) => /\(s\)/.test(text))).toEqual([]);
+  });
+
+  test("無音の略号は明瞭な文字で出す（日本語は「無音」、英語は OFF）", async ({ page }) => {
+    await openAssign(page);
+    await expect(key(page, "ArrowUp").locator(".key-sound")).toHaveText("無音");
+    await id(page, "tab-settings").click();
+    await id(page, "setting-language").selectOption("en");
+    await id(page, "tab-assign").click();
+    await expect(key(page, "ArrowUp").locator(".key-sound")).toHaveText("OFF");
+  });
+
+  test("キーは選択肢を開くことを伝え、開いている間は aria-expanded が真になる", async ({ page }) => {
+    await openAssign(page);
+    await expect(key(page, "KeyA")).toHaveAttribute("aria-haspopup", "menu");
+    await expect(key(page, "KeyA")).toHaveAttribute("aria-expanded", "false");
+    await key(page, "KeyA").click();
+    await expect(key(page, "KeyA")).toHaveAttribute("aria-expanded", "true");
+    await page.keyboard.press("Escape");
+    await expect(key(page, "KeyA")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  for (const language of ["ja", "en"]) {
+    test(`キー名は 10px 以上で、どのキーでも刻印が切れない（${language}）`, async ({ page }) => {
+      await openAssign(page, { language, keyboard_layout: "jis" });
+      for (const layout of ["jis", "us"]) {
+        await id(page, `assign-layout-${layout}`).click();
+        await expect(id(page, "keyboard")).toHaveAttribute("data-layout", layout);
+        const problems = await page.locator('[data-testid="keyboard"] .key').evaluateAll((nodes) =>
+          nodes.flatMap((node) => {
+            const label = node.querySelector(".key-label");
+            const sound = node.querySelector(".key-sound");
+            const found = [];
+            if (parseFloat(getComputedStyle(label).fontSize) < 10) found.push(`${node.dataset.code}: font`);
+            if (label.scrollWidth > node.clientWidth) found.push(`${node.dataset.code}: label ${label.scrollWidth}>${node.clientWidth}`);
+            if (sound.scrollWidth > node.clientWidth) found.push(`${node.dataset.code}: sound`);
+            return found;
+          }),
+        );
+        expect(problems, layout).toEqual([]);
+      }
+    });
+  }
+
+  test("知らない音の名前が設定にあっても、画面全体は落ちず、その項目だけ既定の表示になる", async ({ page }) => {
+    await openAssign(page, {
+      typing: { groups: { letters: "cowbell", nope: "kick" }, keys: { KeyJ: "cowbell", NoSuchKey: "kick", Numpad5: "none" } },
+    });
+    await expect(key(page, "KeyJ")).toHaveAttribute("data-sound", "hat_closed");
+    await expect(key(page, "KeyJ")).toHaveAttribute("data-override", "false");
+    await expect(key(page, "Numpad5")).toHaveAttribute("data-sound", "none");
+    await expect(id(page, "group-select-letters")).toHaveValue("hat_closed");
+    await expect(id(page, "assign-overrides-title")).toHaveText("個別に変えたキー 1個");
+  });
+
+  test("割り当ての区画の描画が失敗しても、設定の区画は使える", async ({ page }) => {
+    await page.route("**/layouts.js", (route) => route.fulfill({ status: 200, contentType: "text/javascript", body: "" }));
+    await openApp(page);
+    await id(page, "tab-assign").click();
+    await id(page, "tab-settings").click();
+    await id(page, "setting-enabled").uncheck();
+    expect((await updateCalls(page)).map((call) => call.args)).toEqual([{ settings: { enabled: false } }]);
+  });
+
+  test("900×600 の縦の収まり（実測値を記録する）", async ({ page }) => {
+    await openAssign(page);
+    const sizes = await page.evaluate(() => ({
+      scrollHeight: document.documentElement.scrollHeight,
+      clientHeight: document.documentElement.clientHeight,
+    }));
+    test.info().annotations.push({ type: "縦の実測", description: JSON.stringify(sizes) });
+    console.log(`縦の実測（900×600）: ${JSON.stringify(sizes)}`);
+    expect(sizes.scrollHeight).toBeGreaterThan(0);
+  });
+});
+
+// ============================================================================
 // 読み込みの失敗・設定を読めないとき
 // ============================================================================
 

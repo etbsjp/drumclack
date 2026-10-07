@@ -202,30 +202,47 @@
         <div class="assign" data-testid="assign" hidden>
           <!-- 編集する組・配列・既定に戻す -->
           <div class="assign-toolbar">
-            <div class="segmented" role="radiogroup" data-testid="assign-set" data-i18n-attr="aria-label:assign.set.label">
-              <button type="button" role="radio" aria-checked="true" data-set="typing" data-testid="assign-set-typing" data-i18n="assign.set.typing"></button>
-              <button type="button" role="radio" aria-checked="false" tabindex="-1" data-set="play" data-testid="assign-set-play" data-i18n="assign.set.play"></button>
+            <div class="toolbar-group">
+              <span class="toolbar-label" id="assign-set-label" data-i18n="assign.set.label"></span>
+              <div class="segmented" role="radiogroup" data-testid="assign-set" aria-labelledby="assign-set-label">
+                <button type="button" role="radio" aria-checked="true" data-set="typing" data-testid="assign-set-typing" data-i18n="assign.set.typing"></button>
+                <button type="button" role="radio" aria-checked="false" tabindex="-1" data-set="play" data-testid="assign-set-play" data-i18n="assign.set.play"></button>
+              </div>
             </div>
-            <div class="segmented" role="radiogroup" data-testid="assign-layout" data-i18n-attr="aria-label:settings.layout">
-              <button type="button" role="radio" aria-checked="false" data-layout="jis" data-testid="assign-layout-jis" data-i18n="settings.layout.jis"></button>
-              <button type="button" role="radio" aria-checked="false" tabindex="-1" data-layout="us" data-testid="assign-layout-us" data-i18n="settings.layout.us"></button>
+            <div class="toolbar-group">
+              <span class="toolbar-label" id="assign-layout-label" data-i18n="settings.layout"></span>
+              <div class="segmented" role="radiogroup" data-testid="assign-layout" aria-labelledby="assign-layout-label">
+                <button type="button" role="radio" aria-checked="false" data-layout="jis" data-testid="assign-layout-jis" data-i18n="settings.layout.jis"></button>
+                <button type="button" role="radio" aria-checked="false" tabindex="-1" data-layout="us" data-testid="assign-layout-us" data-i18n="settings.layout.us"></button>
+              </div>
             </div>
-            <button type="button" class="issue-button assign-reset" data-testid="assign-reset" data-i18n="assign.reset"></button>
-            <span class="field-hint" data-testid="assign-reset-hint" hidden></span>
+            <div class="toolbar-group toolbar-reset">
+              <button type="button" class="issue-button assign-reset" data-testid="assign-reset" data-i18n="assign.reset"></button>
+              <span class="field-hint" data-testid="assign-reset-hint" hidden></span>
+            </div>
           </div>
 
-          <div class="assign-confirm" role="group" data-testid="assign-reset-confirm" data-i18n-attr="aria-label:assign.reset" hidden>
-            <p class="assign-confirm-text" data-testid="assign-reset-text"></p>
-            <button type="button" class="issue-button" data-testid="assign-reset-confirm-button" data-i18n="assign.reset"></button>
-            <button type="button" class="issue-button" data-testid="assign-reset-cancel" data-i18n="assign.reset.cancel"></button>
+          <!-- 確認と結果の帯。どちらも同じ場所に重ねて、出入りで絵が上下にずれないよう、高さを常に確保する。 -->
+          <div class="assign-band">
+            <!-- 何も出ていないあいだは、操作の案内を同じ場所に出す。 -->
+            <p class="field-hint assign-hint" data-testid="assign-hint" data-i18n="assign.hint"></p>
+            <div
+              class="assign-confirm"
+              role="alertdialog"
+              aria-describedby="assign-reset-text"
+              data-testid="assign-reset-confirm"
+              data-i18n-attr="aria-label:assign.reset"
+              hidden
+            >
+              <p class="assign-confirm-text" id="assign-reset-text" data-testid="assign-reset-text"></p>
+              <button type="button" class="issue-button" data-testid="assign-reset-confirm-button" data-i18n="assign.reset"></button>
+              <button type="button" class="issue-button" data-testid="assign-reset-cancel" data-i18n="assign.reset.cancel"></button>
+            </div>
+            <div class="assign-feedback" role="status" data-testid="assign-feedback" data-has-content="false">
+              <span data-testid="assign-feedback-text"></span>
+              <button type="button" class="issue-button" data-testid="assign-undo" data-i18n="assign.undo" hidden></button>
+            </div>
           </div>
-
-          <div class="assign-feedback" role="status" data-testid="assign-feedback" data-has-content="false">
-            <span data-testid="assign-feedback-text"></span>
-            <button type="button" class="issue-button" data-testid="assign-undo" data-i18n="assign.undo" hidden></button>
-          </div>
-
-          <p class="field-hint assign-hint" data-i18n="assign.hint"></p>
 
           <!-- キーボードの絵。足りない幅はこの枠だけ横にスクロールする。 -->
           <div class="keyboard-scroll" data-testid="keyboard-scroll" role="group" data-i18n-attr="aria-label:assign.keyboard.label">

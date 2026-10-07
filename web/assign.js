@@ -113,9 +113,23 @@
     const snapshot = state.ctx.getSnapshot();
     const section = snapshot && snapshot.settings && snapshot.settings[set];
     return {
-      groups: (section && section.groups) || {},
-      keys: (section && section.keys) || {},
+      groups: knownEntries((section && section.groups) || {}, (name) => GROUPS.includes(name)),
+      keys: knownEntries((section && section.keys) || {}, (name) => state.data && name in state.data.groups),
     };
+  }
+
+  /**
+   * 知らない音の名前・グループ名・キー名の項目は無視する（その項目だけ既定の表示になる）。
+   * Rust も読み取り時に同じ扱いだが、手編集や将来の変更で届いても、画面全体が落ちないようにする。
+   */
+  function knownEntries(values, isKnownName) {
+    const known = {};
+    for (const [name, sound] of Object.entries(values)) {
+      if (isKnownName(name) && (sound === NONE || SOUNDS.includes(sound))) {
+        known[name] = sound;
+      }
+    }
+    return known;
   }
 
   function groupDefault(set, group) {
@@ -181,7 +195,12 @@
     board.style.setProperty("--board-h", String(height));
     board.replaceChildren();
     for (const key of keys) {
-      const button = element("button", "key", { type: "button", tabindex: "-1" });
+      const button = element("button", "key", {
+        type: "button",
+        tabindex: "-1",
+        "aria-haspopup": "menu",
+        "aria-expanded": "false",
+      });
       button.dataset.code = key.code;
       button.dataset.testid = `key-${key.code}`;
       button.style.setProperty("--x", String(key.x));
@@ -302,6 +321,7 @@
     if (!state.ctx.getSnapshot()) return;
     closeMenu(false);
     state.menu = { code };
+    state.keyEls.get(code).setAttribute("aria-expanded", "true");
     renderMenu();
     positionMenu(state.keyEls.get(code));
     const checked = els.menu.querySelector('[aria-checked="true"]');
@@ -313,6 +333,7 @@
     if (!state.menu) return;
     const button = state.keyEls.get(state.menu.code);
     state.menu = null;
+    if (button) button.setAttribute("aria-expanded", "false");
     els.menu.hidden = true;
     els.menu.replaceChildren();
     document.removeEventListener("pointerdown", onOutsidePointerDown, true);
@@ -651,6 +672,7 @@
     els.resetHint.hidden = count !== 0 || state.feedback != null;
     els.resetHint.textContent = t("assign.reset.none", { set: setName });
 
+    els.hint.hidden = state.confirming || state.feedback != null;
     els.confirm.hidden = !state.confirming;
     if (state.confirming) {
       els.confirmText.textContent = t("assign.reset.confirm", { set: setName, groups, keys, count });
@@ -731,6 +753,7 @@
     els.overridesNone = $("assign-overrides-none");
     els.reset = $("assign-reset");
     els.resetHint = $("assign-reset-hint");
+    els.hint = $("assign-hint");
     els.confirm = $("assign-reset-confirm");
     els.confirmText = $("assign-reset-text");
     els.resetCancel = $("assign-reset-cancel");
@@ -759,6 +782,12 @@
     els.reset.addEventListener("click", startReset);
     $("assign-reset-confirm-button").addEventListener("click", confirmReset);
     els.resetCancel.addEventListener("click", cancelReset);
+    els.confirm.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelReset();
+      }
+    });
     els.undo.addEventListener("click", undoReset);
     window.addEventListener("resize", () => {
       closeMenu(false);
@@ -775,10 +804,30 @@
     // 描くのは、対応表を読み込んだあとに main.js が呼ぶ render から（読み込み前に描くと、文言がキーのままになる）。
   }
 
+  /** この区画の失敗を、設定の区画など、ほかの部分へ広げない。 */
+  function contained(fn) {
+    return (...args) => {
+      try {
+        return fn(...args);
+      } catch (err) {
+        console.error("割り当ての区画で問題が起きました", err);
+        return undefined;
+      }
+    };
+  }
+
   window.drumclackAssign = {
-    init,
-    render,
+    init: async (ctx) => {
+      try {
+        await init(ctx);
+      } catch (err) {
+        console.error("割り当ての区画を起動できませんでした", err);
+        state.loadError = true;
+        contained(render)();
+      }
+    },
+    render: contained(render),
     /** 区画を切り替えるとき（開いている選択肢を閉じる）。 */
-    close: () => closeMenu(false),
+    close: contained(() => closeMenu(false)),
   };
 })();
