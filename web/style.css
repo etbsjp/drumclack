@@ -462,3 +462,13 @@ select {
   font-weight: 400;
   color: var(--muted);
 }
+
+.issue-button[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* 進行中・失敗の文。手順の文と同じ強さで、ボタンの次の行に出す。 */
+.issue-step-message {
+  flex-basis: 100%;
+}

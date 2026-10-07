@@ -206,8 +206,15 @@ test.describe("許可の案内", () => {
 
     await id(page, "status-action-restart").click();
     await expect.poll(async () => (await allCalls(page)).map((c) => c.cmd)).toContain("restart_app");
-    // 押したあとは、続けて押せない（二重に起動し直さない）。
-    await expect(id(page, "status-action-restart")).toBeDisabled();
+    // 押した直後に「起動し直しています」を出し、続けて押せない（二重に起動し直さない）。焦点は残る。
+    await expect(id(page, "status-step-progress-restart")).toHaveText(ja["status.permission.restarting"]);
+    await expect(id(page, "status-action-restart")).toHaveAttribute("aria-disabled", "true");
+    await expect(id(page, "status-action-restart")).toHaveAttribute("aria-busy", "true");
+    await expect(id(page, "status-action-restart")).toBeFocused();
+    const restarts = async () => (await allCalls(page)).filter((c) => c.cmd === "restart_app").length;
+    await id(page, "status-action-restart").click({ force: true });
+    await page.waitForTimeout(500);
+    expect(await restarts()).toBe(1);
   });
 
   test("設定を開けなかった・起動し直せなかったときは、自分で行う方法を出し、ボタンは押し直せる", async ({ page }) => {
@@ -215,11 +222,14 @@ test.describe("許可の案内", () => {
     const issue = id(page, "status-issue-permission");
 
     await id(page, "status-action-openSettings").click();
-    await expect(issue).toContainText(ja["status.permission.failed.open"]);
+    // 失敗の文は、失敗したボタンの項目の中（直下）に、弱い装飾なしで出る。
+    await expect(id(page, "status-step-error-openSettings")).toHaveText(ja["status.permission.failed.open"]);
+    await expect(issue.locator(".detail-text")).toHaveCount(0);
 
     await id(page, "status-action-restart").click();
-    await expect(issue).toContainText(ja["status.permission.failed.restart"]);
-    await expect(id(page, "status-action-restart")).toBeEnabled();
+    await expect(id(page, "status-step-error-restart")).toHaveText(ja["status.permission.failed.restart"]);
+    await expect(id(page, "status-step-error-openSettings")).toHaveCount(0);
+    await expect(id(page, "status-action-restart")).not.toHaveAttribute("aria-disabled", "true");
   });
 
   test("許可済みで未発音（Mac）: 許可の手順は消え、「何かキーを押してください」だけを出す", async ({ page }) => {
@@ -351,6 +361,22 @@ test.describe("設定の追従", () => {
     await volume.evaluate((el) => el.dispatchEvent(new Event("change", { bubbles: true })));
     await expect.poll(() => updateCalls(page)).toEqual([{ cmd: "update_settings", args: { settings: { volume: 0.7 } } }]);
     await expect(volume).toHaveValue("70");
+  });
+
+  test("スライダーから焦点が外れたら（change が来なくても）、操作の途中ではなくなり、取り直した値に揃う", async ({ page }) => {
+    await openApp(page);
+    const volume = id(page, "setting-volume");
+    await volume.focus();
+    await volume.evaluate((el) => {
+      el.value = "70";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await changeSettingsOnRustSide(page, { volume: 0.2 });
+    await page.waitForTimeout(1300);
+    await expect(volume).toHaveValue("70");
+
+    await volume.blur();
+    await expect(volume).toHaveValue("20", { timeout: 3000 });
   });
 
   test("取り直しに失敗しても、画面にエラーを出さず、次の取り直しで追従する", async ({ page }) => {

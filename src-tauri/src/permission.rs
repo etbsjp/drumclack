@@ -46,11 +46,11 @@ pub fn check_input_monitoring() -> &'static str {
     "unknown"
 }
 
-/// 入力監視の設定画面を開く（macOS）。シェルを通さず、`open` に URL を引数として渡す。
+/// 入力監視の設定画面を開く（macOS）。シェルを通さず、`/usr/bin/open`（絶対パス）に URL を引数として渡す。
 /// 設定を変えるのは利用者で、このアプリは画面を開くだけ。
 #[cfg(target_os = "macos")]
 pub fn open_input_monitoring_settings() -> Result<(), String> {
-    let status = std::process::Command::new("open")
+    let status = std::process::Command::new("/usr/bin/open")
         .arg(INPUT_MONITORING_SETTINGS_URL)
         .status()
         .map_err(|error| format!("open を起動できませんでした: {error}"))?;

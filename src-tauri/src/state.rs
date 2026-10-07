@@ -69,7 +69,8 @@ impl AppState {
         }
     }
 
-    /// キー監視にイベントが届いたことがあるか。
+    /// キー監視にイベントが届いたことがあるか。起動後ずっと真のままなので、許可が後から取り消されても
+    /// 偽に戻らない（取り消しは検知できない既知の制約。次に起動し直すと OS の判定に戻る）。
     pub fn key_events_seen(&self) -> bool {
         self.key_events_seen.load(Ordering::Relaxed)
     }

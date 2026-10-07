@@ -48,6 +48,7 @@ const view = {
   restarting: false, // 「起動し直す」を押したあと
   settingsVersion: 0, // 画面から設定を送るたびに増やす。古い取り直しの結果を捨てる目印
   pendingUpdates: 0, // Rust へ送っている最中の更新の数
+  refreshingSettings: false, // 設定を取り直している最中か（重ねて取らない）
   editing: new Set(), // 操作の途中の項目（動かしている最中のスライダー）。取り直した値で上書きしない
 };
 
@@ -94,13 +95,6 @@ function effectivePermissionState() {
   return view.status.key_events_seen ? "granted" : permission.state;
 }
 
-/** 案内のボタンが失敗したときの、自分で行う方法の文。 */
-function actionErrorText() {
-  if (view.actionError === "open") return t("status.permission.failed.open");
-  if (view.actionError === "restart") return t("status.permission.failed.restart");
-  return null;
-}
-
 /** 一度でも鳴ったか。保存された印（以前の起動で鳴った）か、今回の起動で鳴った記録があれば真。 */
 function hasSoundedBefore() {
   const saved = view.settings && view.settings.settings.first_sound_done === true;
@@ -133,15 +127,21 @@ function collectIssues() {
       action: t("status.permission.steps"),
       // 許可 → 起動し直す → キーを押す、の3段。ボタンは名前（ACTIONS）で引く。
       steps: [
-        { text: t("status.permission.stepOpen"), button: { name: "openSettings", label: t("status.permission.stepOpen.button") } },
+        {
+          text: t("status.permission.stepOpen"),
+          button: { name: "openSettings", label: t("status.permission.stepOpen.button") },
+          error: view.actionError === "open" ? t("status.permission.failed.open") : null,
+        },
         {
           text: t("status.permission.stepRestart"),
-          button: { name: "restart", label: t("status.permission.stepRestart.button"), disabled: view.restarting },
+          button: { name: "restart", label: t("status.permission.stepRestart.button"), busy: view.restarting },
+          // 押した直後から、起動し直している最中だと文で伝える（失敗したら失敗の文に替わる）。
+          progress: view.restarting ? t("status.permission.restarting") : null,
+          error: view.actionError === "restart" ? t("status.permission.failed.restart") : null,
         },
         { text: t("status.permission.stepPress") },
       ],
       note: t("status.permission.reset"),
-      detail: actionErrorText(),
     });
   }
 
@@ -199,9 +199,29 @@ function issueElement(issue) {
         button.className = "issue-button";
         button.dataset.testid = `status-action-${step.button.name}`;
         button.textContent = step.button.label;
-        button.disabled = step.button.disabled === true;
-        button.addEventListener("click", ACTIONS[step.button.name]);
+        // disabled にすると焦点が外れるので、押せない間は aria-disabled と aria-busy で表す（押しても何もしない）。
+        if (step.button.busy) {
+          button.setAttribute("aria-disabled", "true");
+          button.setAttribute("aria-busy", "true");
+        }
+        button.addEventListener("click", () => {
+          if (!step.button.busy) ACTIONS[step.button.name]();
+        });
         item.appendChild(button);
+      }
+      // 進行中の文と失敗の文は、手順の文と同じ強さで、そのボタンの直下に出す。
+      for (const [key, role] of [
+        ["progress", "status"],
+        ["error", "alert"],
+      ]) {
+        if (step[key]) {
+          const message = document.createElement("span");
+          message.className = "issue-step-message";
+          message.dataset.testid = `status-step-${key}-${step.button.name}`;
+          message.setAttribute("role", role);
+          message.textContent = step[key];
+          item.appendChild(message);
+        }
       }
       list.appendChild(item);
     }
@@ -249,6 +269,8 @@ function renderBand() {
     return;
   }
   view.issuesKey = key;
+  // 作り直すと焦点が body に落ちるので、焦点のあったボタンを、作り直したあとの同じ名前のボタンへ戻す。
+  const focusedTestId = els.issues.contains(document.activeElement) ? document.activeElement.dataset.testid : null;
   els.issues.replaceChildren();
 
   if (checking) {
@@ -266,6 +288,10 @@ function renderBand() {
     for (const issue of issues) {
       els.issues.appendChild(issueElement(issue));
     }
+  }
+  if (focusedTestId) {
+    const again = $(focusedTestId);
+    if (again && els.issues.contains(again)) again.focus();
   }
 }
 
@@ -341,7 +367,8 @@ async function poll() {
   renderStatus();
   pollCount += 1;
   if (pollCount % SETTINGS_REFRESH_EVERY_POLLS === 0) {
-    await refreshSettings();
+    // 待たない（設定の取得が遅くても、状態の取得を止めない）。重なって走らせないよう中で見張る。
+    refreshSettings();
   }
   setTimeout(poll, POLL_INTERVAL_MS);
 }
@@ -470,16 +497,19 @@ function sendUpdate(patch) {
  * 取得した設定が今の画面と同じ。操作の途中のスライダーは、取り込んでも上書きしない（renderControls）。
  */
 async function refreshSettings() {
-  if (view.pendingUpdates > 0) {
+  if (view.pendingUpdates > 0 || view.refreshingSettings) {
     return;
   }
   const version = view.settingsVersion;
   let snapshot;
+  view.refreshingSettings = true;
   try {
     snapshot = await bridge.getSettings();
   } catch (err) {
     // 取り直しの失敗は黙って次に回す（起動時の読み込みの失敗とは別。画面には出さない）。
     return;
+  } finally {
+    view.refreshingSettings = false;
   }
   if (!snapshot || !snapshot.settings || version !== view.settingsVersion || view.pendingUpdates > 0) {
     return;
@@ -510,6 +540,15 @@ function bindSettings() {
       view.editing.add(key);
       setSliderValue(slider, output, slider.value);
     });
+    // 離す・中断・焦点が外れたときも、操作の途中ではなくする（change が来ないまま editing が残らないように）。
+    // pointerup は change の直前に来るので、少し遅らせる（先に外すと、取り直しが値を戻して change が古い値を送りうる）。
+    // 外したあとは描き直して、取り込み済みの Rust 側の値に揃える。
+    const stopEditing = () => {
+      if (view.editing.delete(key)) renderControls();
+    };
+    slider.addEventListener("pointerup", () => setTimeout(stopEditing, 100));
+    slider.addEventListener("pointercancel", stopEditing);
+    slider.addEventListener("blur", stopEditing);
     slider.addEventListener("change", () => {
       // 手を離したので操作の途中ではない。送っている間は取り直しも止まり、返ってきた値で描き直される。
       view.editing.delete(key);
