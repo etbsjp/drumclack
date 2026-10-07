@@ -3,6 +3,7 @@
 //! ここに集める情報はすべて「今どうなっているか」の状態のみで、
 //! 押されたキーの内容や文字列など、入力内容そのものは一切保持しない。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::assignment::LiveAssignments;
@@ -31,6 +32,9 @@ pub struct AppState {
     pub test_delay_ms: Option<u64>,
     /// キー監視が読む、今の割り当てとオン／オフ。設定の変更で差し替わる（`SettingsStore` が書く）。
     pub assignments: Arc<LiveAssignments>,
+    /// キー監視に、OS からキーのイベントが1回でも届いたか（届いた事実だけ。どのキーかは持たない）。
+    /// 入力監視の許可は起動時の判定が起動後の変化を反映しないため、実際に届いたことで補う。
+    key_events_seen: AtomicBool,
 }
 
 impl AppState {
@@ -53,7 +57,21 @@ impl AppState {
             audio_engine,
             test_delay_ms,
             assignments: Arc::new(LiveAssignments::new()),
+            key_events_seen: AtomicBool::new(false),
         }
+    }
+
+    /// キー監視が OS からイベントを受け取ったと記録する（キーの内容は渡さない）。
+    pub fn note_key_event_received(&self) {
+        // 毎打鍵で呼ばれるので、すでに真なら書き込まない。
+        if !self.key_events_seen.load(Ordering::Relaxed) {
+            self.key_events_seen.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// キー監視にイベントが届いたことがあるか。
+    pub fn key_events_seen(&self) -> bool {
+        self.key_events_seen.load(Ordering::Relaxed)
     }
 
     /// 入力監視の許可が足りているか。Mac は許可が下りていなければ偽。Windows には許可の概念が無いので常に真。
@@ -84,6 +102,8 @@ pub struct StatusSnapshot {
     pub active_voices: usize,
     pub max_voices: usize,
     pub test_delay_ms: Option<u64>,
+    /// キー監視にイベントが届いたか。真なら、権限の判定が未許可でも実際には許可されている。
+    pub key_events_seen: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -126,5 +146,6 @@ pub fn build_snapshot(state: &AppState) -> StatusSnapshot {
         active_voices,
         max_voices: crate::voices::MAX_VOICES,
         test_delay_ms: state.test_delay_ms,
+        key_events_seen: state.key_events_seen(),
     }
 }

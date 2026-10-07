@@ -422,3 +422,43 @@ select {
   border: 1px solid var(--border);
   border-radius: 6px;
 }
+
+/* 許可の案内（3段の手順）。ボタンは窓の幅が狭くても折り返せるようにする。 */
+.issue-steps {
+  margin: 8px 0 0;
+  padding-left: 22px;
+  font-weight: 400;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.issue-steps li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.issue-button {
+  font: inherit;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.issue-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.issue-note {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}

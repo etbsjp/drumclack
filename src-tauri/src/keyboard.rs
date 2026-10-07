@@ -65,6 +65,8 @@ fn dispatch_at(
     state: &Arc<AppState>,
     hit_at: Instant,
 ) {
+    // OS からキーのイベントが届いた事実だけを残す（無音のキーでも、どのキーでも同じ）。
+    state.note_key_event_received();
     if let Some(position) = tracker.handle(event) {
         if let Some(sound_name) = state.assignments.sound_name_for_key(position) {
             // 音量は、遅延テスト用の待ちより前に（打鍵の時点の時刻で）決める。
@@ -619,6 +621,19 @@ mod dispatch_tests {
         // 無音のグループを鳴る音に変えれば、そのグループのキーが鳴る。
         rig.store.update(&json!({"typing": {"groups": {"navigation": "tom_low"}}})).unwrap();
         assert_eq!(rig.tap_named("ArrowUp"), ["tom_low"]);
+    }
+
+    #[test]
+    fn any_key_event_marks_that_monitoring_receives_events_even_if_silent_or_off() {
+        let mut rig = Rig::new(None);
+        assert!(!rig.state.key_events_seen(), "打鍵の前は届いていない");
+        assert!(!crate::state::build_snapshot(&rig.state).key_events_seen);
+
+        // 無音のキーでも、オフの間でも、「届いた」事実は残る（鳴るかどうかとは別）。
+        rig.store.set_enabled(false);
+        assert_eq!(rig.tap_named("ArrowUp").len(), 0);
+        assert!(rig.state.key_events_seen());
+        assert!(crate::state::build_snapshot(&rig.state).key_events_seen);
     }
 
     #[test]

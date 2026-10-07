@@ -34,11 +34,15 @@ const STATUS_OK = {
   platform: "macos",
   permission: { state: "granted" },
   audio: { ok: true, message: "初期化済み（サンプルレート 48000 Hz）" },
-  last_play_ms: null,
+  // 鳴ったことがある状態（正常の1行になる）。まだ鳴っていない状態は STATUS_NO_SOUND_YET。
+  last_play_ms: new Date(2026, 9, 6, 15, 0, 0).getTime(),
   active_voices: 0,
   max_voices: 16,
   test_delay_ms: null,
+  key_events_seen: false,
 };
+
+const STATUS_NO_SOUND_YET = { ...STATUS_OK, last_play_ms: null };
 
 const STATUS_PERMISSION_DENIED = { ...STATUS_OK, permission: { state: "denied" } };
 const STATUS_PERMISSION_UNKNOWN = { ...STATUS_OK, permission: { state: "unknown" } };
@@ -53,6 +57,7 @@ const STATUS_AUDIO_FAILED = {
  *  - status: get_status が返す状態 / statusError: 状態の取得を失敗させる
  *  - recovered / saveFailed: 設定のスナップショットの印
  *  - failSettings / failUpdate: get_settings / update_settings を失敗させる
+ *  - failOpenSettings / failRestart: 入力監視の設定を開く命令 / 起動し直す命令を失敗させる
  *  - malformedSettings: get_settings が（設定を含まない）壊れた返事を返す
  *  - hangSettings: get_settings が返事をしない
  *  - noWait: 画面が起動し終わる（data-ready）のを待たずに返す
@@ -66,6 +71,8 @@ async function openApp(page, options = {}) {
     saveFailed: false,
     failSettings: false,
     failUpdate: false,
+    failOpenSettings: false,
+    failRestart: false,
     malformedSettings: false,
     hangSettings: false,
     ...options,
@@ -75,8 +82,9 @@ async function openApp(page, options = {}) {
     const fake = { cfg, calls: [], settings: JSON.parse(JSON.stringify(cfg.settings)) };
     window.__fake = fake;
 
+    // 本物と同じく、返すたびに別のオブジェクトにする（Rust との間は JSON で渡るため）。
     const snapshot = () => ({
-      settings: fake.settings,
+      settings: JSON.parse(JSON.stringify(fake.settings)),
       recovered_from_broken: fake.cfg.recovered,
       save_failed: fake.cfg.saveFailed,
     });
@@ -100,6 +108,14 @@ async function openApp(page, options = {}) {
             // Rust の差分の重ね方のうち、この画面が送る範囲（最上位の項目）だけを真似る。
             Object.assign(fake.settings, args.settings);
             return snapshot();
+          }
+          if (cmd === "open_input_monitoring_settings") {
+            if (fake.cfg.failOpenSettings) throw new Error("open refused (test)");
+            return null;
+          }
+          if (cmd === "restart_app") {
+            if (fake.cfg.failRestart) throw new Error("restart refused (test)");
+            return null;
           }
           throw new Error(`知らない命令: ${cmd}`);
         },
@@ -129,6 +145,11 @@ function setStatus(page, status) {
     window.__fake.cfg.statusError = false;
     window.__fake.cfg.status = next;
   }, status);
+}
+
+/** Rust 側で設定が変わったことにする（メニュー／トレイの切り替え、初めて鳴った印など）。 */
+function changeSettingsOnRustSide(page, patch) {
+  return page.evaluate((next) => Object.assign(window.__fake.settings, next), patch);
 }
 
 function readWeb(relativePath) {
@@ -165,6 +186,7 @@ module.exports = {
   SAMPLE_SETTINGS,
   DEFAULT_SETTINGS,
   STATUS_OK,
+  STATUS_NO_SOUND_YET,
   STATUS_PERMISSION_DENIED,
   STATUS_PERMISSION_UNKNOWN,
   STATUS_AUDIO_FAILED,
@@ -172,5 +194,6 @@ module.exports = {
   updateCalls,
   allCalls,
   setStatus,
+  changeSettingsOnRustSide,
   readWeb,
 };

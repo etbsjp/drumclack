@@ -6,6 +6,8 @@ fn main() {
         "get_settings",
         "update_settings",
         "preview_sound",
+        "open_input_monitoring_settings",
+        "restart_app",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(app_commands))
         .expect("tauri-build に失敗しました");
