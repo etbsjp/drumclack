@@ -73,6 +73,7 @@ async function openApp(page, options = {}) {
     failUpdate: false,
     failOpenSettings: false,
     failRestart: false,
+    failPreview: false,
     malformedSettings: false,
     hangSettings: false,
     ...options,
@@ -105,9 +106,26 @@ async function openApp(page, options = {}) {
           }
           if (cmd === "update_settings") {
             if (fake.cfg.failUpdate) throw new Error("update refused (test)");
-            // Rust の差分の重ね方のうち、この画面が送る範囲（最上位の項目）だけを真似る。
-            Object.assign(fake.settings, args.settings);
+            // Rust の差分の重ね方を真似る。最上位の項目は置き換え、割り当て（typing / play）は
+            // groups / keys の項目単位で重ね、値が null の項目は上書きを消す。
+            for (const [name, value] of Object.entries(args.settings)) {
+              if ((name === "typing" || name === "play") && value && typeof value === "object") {
+                const section = fake.settings[name];
+                for (const part of ["groups", "keys"]) {
+                  for (const [item, sound] of Object.entries(value[part] || {})) {
+                    if (sound === null) delete section[part][item];
+                    else section[part][item] = sound;
+                  }
+                }
+              } else {
+                fake.settings[name] = value;
+              }
+            }
             return snapshot();
+          }
+          if (cmd === "preview_sound") {
+            if (fake.cfg.failPreview) throw new Error("preview refused (test)");
+            return null;
           }
           if (cmd === "open_input_monitoring_settings") {
             if (fake.cfg.failOpenSettings) throw new Error("open refused (test)");
@@ -133,6 +151,18 @@ async function openApp(page, options = {}) {
 /** 画面から出た `update_settings` の呼び出し（命令名と引数）。 */
 function updateCalls(page) {
   return page.evaluate(() => window.__fake.calls.filter((call) => call.cmd === "update_settings"));
+}
+
+/** 画面から出た `preview_sound` の呼び出し（引数）。 */
+function previewCalls(page) {
+  return page.evaluate(() =>
+    window.__fake.calls.filter((call) => call.cmd === "preview_sound").map((call) => call.args),
+  );
+}
+
+/** 今 Rust 側（差し替え）が持っている設定。 */
+function currentSettings(page) {
+  return page.evaluate(() => JSON.parse(JSON.stringify(window.__fake.settings)));
 }
 
 function allCalls(page) {
@@ -192,6 +222,8 @@ module.exports = {
   STATUS_AUDIO_FAILED,
   openApp,
   updateCalls,
+  previewCalls,
+  currentSettings,
   allCalls,
   setStatus,
   changeSettingsOnRustSide,
