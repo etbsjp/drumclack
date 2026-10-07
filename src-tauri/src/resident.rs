@@ -65,6 +65,8 @@ pub fn mark_show_window_next_launch(config_dir: &Path) -> std::io::Result<()> {
 
 /// 印があれば消して `true` を返す。起動のたびに必ず1回呼ぶ（印を残したままにすると、次の起動でも窓が出てしまう）。
 /// フォルダが分からない・印がない・消せないときは `false`。
+/// 「消せた」を「印があった」とみなす（`remove_file` の成功だけで判断する）。消せなかったときは窓を出さない側に
+/// 倒れ、印が残って次の起動でも窓が出続ける事故より、窓が出ない方を選ぶ。
 pub fn take_show_window_mark(config_dir: Option<&Path>) -> bool {
     config_dir.map(|dir| std::fs::remove_file(dir.join(SHOW_WINDOW_MARK_FILE_NAME)).is_ok()).unwrap_or(false)
 }

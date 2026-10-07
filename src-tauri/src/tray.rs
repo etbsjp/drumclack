@@ -38,9 +38,9 @@ struct Tray {
     open_play: MenuItem<Wry>,
     autostart: CheckMenuItem<Wry>,
     quit: MenuItem<Wry>,
-    /// 左上のアプリのメニューに足した項目（Mac のみ）。
+    /// 左上のアプリのメニューに足した項目（Mac のみ）。組み立てに失敗したときは `None`（トレイは動かす）。
     #[cfg(target_os = "macos")]
-    app_menu: crate::app_menu::AppMenu,
+    app_menu: Option<crate::app_menu::AppMenu>,
     /// 最後に反映したアイコンの状態と言語。変わったときだけ OS の部品を更新する。
     rendered: Mutex<Option<(IconState, MenuLang)>>,
 }
@@ -71,7 +71,7 @@ pub fn show_main_window(app: &AppHandle, section: Option<&str>) {
     }
 }
 
-fn log_if_failed<E: std::fmt::Display>(step: &str, result: Result<(), E>) {
+pub fn log_if_failed<E: std::fmt::Display>(step: &str, result: Result<(), E>) {
     if let Err(error) = result {
         eprintln!("[drumclack] 窓の操作に失敗しました（{step}）: {error}");
     }
@@ -143,10 +143,16 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         .build(app)?;
 
     #[cfg(target_os = "macos")]
-    let app_menu = {
-        let app_menu = crate::app_menu::setup(app, text)?;
-        app.on_menu_event(crate::app_menu::handle_menu_event);
-        app_menu
+    let app_menu = match crate::app_menu::setup(app, text) {
+        Ok(app_menu) => {
+            app.on_menu_event(crate::app_menu::handle_menu_event);
+            Some(app_menu)
+        }
+        Err(error) => {
+            // アプリのメニューは補助の入口。作れなくても、トレイの初期化は続ける。
+            eprintln!("[drumclack] アプリのメニューを作れませんでした: {error}");
+            None
+        }
     };
 
     app.manage(Arc::new(Tray {
@@ -197,7 +203,9 @@ pub fn refresh(app: &AppHandle) {
         let _ = tray.autostart.set_text(text.launch_at_login);
         let _ = tray.quit.set_text(text.quit);
         #[cfg(target_os = "macos")]
-        tray.app_menu.set_text(text);
+        if let Some(app_menu) = &tray.app_menu {
+            app_menu.set_text(text);
+        }
     }
     *rendered = Some((icon_state, lang));
 }
