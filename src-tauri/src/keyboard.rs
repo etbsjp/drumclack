@@ -907,4 +907,38 @@ mod dispatch_tests {
         tap_every_key(&mut rig);
         assert_eq!(recorder.sounds(), ["tom_low", "kick"]);
     }
+
+    // ---- 演奏用の既定の配置（実機で叩いて決める。決め直すときは、この表と assignment.rs・web/key-data.json を同じ変更で揃える） ----
+
+    #[test]
+    fn play_default_layout_is_the_home_row_eight_sounds_and_space_and_everything_else_is_silent() {
+        let (mut rig, recorder) = rig_with_recorder();
+        rig.state.assignments.play_mode.set_view_open(true);
+        rig.state.assignments.play_mode.set_window_focused(true);
+
+        let layout = [
+            ("KeyA", "kick"),
+            ("KeyS", "snare"),
+            ("KeyD", "rim"),
+            ("KeyF", "clap"),
+            ("KeyJ", "hat_closed"),
+            ("KeyK", "hat_open"),
+            ("KeyL", "tom_high"),
+            ("Semicolon", "tom_low"),
+            ("Space", "kick"),
+        ];
+        // 8音がそろっている（叩き分けられる）こと。
+        let mut sounds: Vec<&str> = layout.iter().map(|(_, sound)| *sound).collect();
+        sounds.sort_unstable();
+        sounds.dedup();
+        assert_eq!(sounds.len(), 8);
+
+        for &position in KeyPosition::ALL {
+            let name = crate::key_position::KeyPosition::code_name(position);
+            let expected: Vec<&str> =
+                layout.iter().filter(|(key, _)| *key == name).map(|(_, sound)| *sound).collect();
+            assert_eq!(rig.tap(position), expected, "{name}");
+        }
+        assert_eq!(recorder.sounds().len(), layout.len(), "鳴った音だけが知らされる");
+    }
 }

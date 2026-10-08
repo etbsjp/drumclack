@@ -79,6 +79,21 @@ test.describe("パッド", () => {
     expect(await keys("tom_low")).toEqual([";"]);
   });
 
+  // 既定の配置は実機で叩いて決める。決め直すときは、ここと Rust 側の既定（assignment.rs）・web/key-data.json を揃える。
+  test("設定を何も変えていないときは、演奏用の既定の配置（ホームポジション周辺の8音）が書いてある", async ({ page }) => {
+    await openPlay(page, { play: { groups: {}, keys: {} } });
+
+    const keys = async (sound) => id(page, `pad-keys-${sound}`).locator(".pad-key").allTextContents();
+    expect(await keys("kick")).toEqual(["A", "Space"]);
+    expect(await keys("snare")).toEqual(["S"]);
+    expect(await keys("rim")).toEqual(["D"]);
+    expect(await keys("clap")).toEqual(["F"]);
+    expect(await keys("hat_closed")).toEqual(["J"]);
+    expect(await keys("hat_open")).toEqual(["K"]);
+    expect(await keys("tom_high")).toEqual(["L"]);
+    expect(await keys("tom_low")).toEqual([";"]);
+  });
+
   test("割り当てを変えると、パッドのキーも変わる（多いときは「ほか N 個」にまとめる）", async ({ page }) => {
     await openPlay(page, { play: { groups: { letters: "kick", space: "kick" }, keys: { KeyJ: "snare" } } });
 
