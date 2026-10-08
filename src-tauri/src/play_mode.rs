@@ -7,7 +7,7 @@
 //! 既定の割り当てでは、音の名前の列が打鍵の種別の列そのものになるため、タイピング用で鳴らした音は送らない。
 //! キーの位置・打鍵の時刻は、ここには届かない。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 
 /// 画面へ送る2つの知らせ。音の名前と、演奏用の割り当てを使っているかの真偽だけを運ぶ。
@@ -18,12 +18,16 @@ pub trait PlayEvents: Send + Sync {
     fn mode_changed(&self, playing: bool);
 }
 
+/// 演奏の画面が開いている（画面が知らせる）。
+const VIEW_OPEN: u8 = 0b01;
+/// Drumclack の窓が最前面（窓のフォーカスの変化）。
+const WINDOW_FOCUSED: u8 = 0b10;
+
 /// 演奏用の割り当てを使うかの印と、画面への知らせの出口。
+/// 2つの印は1つの値のビットにまとめ、`fetch_or`／`fetch_and` で更新する（別々に書くと、同時に更新されたときに
+/// 切り替わりの検出と知らせの順序が食い違うため）。
 pub struct PlayMode {
-    /// 演奏の画面が開いているか（画面が知らせる）。
-    view_open: AtomicBool,
-    /// Drumclack の窓が最前面か（窓のフォーカスの変化）。
-    window_focused: AtomicBool,
+    flags: AtomicU8,
     events: RwLock<Option<Arc<dyn PlayEvents>>>,
 }
 
@@ -31,8 +35,7 @@ impl PlayMode {
     /// 画面は開いておらず、窓も最前面でない状態で始める（タイピング用）。
     pub fn new() -> Self {
         Self {
-            view_open: AtomicBool::new(false),
-            window_focused: AtomicBool::new(false),
+            flags: AtomicU8::new(0),
             events: RwLock::new(None),
         }
     }
@@ -44,24 +47,25 @@ impl PlayMode {
 
     /// 今、演奏用の割り当てを使うか。
     pub fn is_active(&self) -> bool {
-        self.view_open.load(Ordering::Relaxed) && self.window_focused.load(Ordering::Relaxed)
+        self.flags.load(Ordering::Relaxed) & (VIEW_OPEN | WINDOW_FOCUSED) == (VIEW_OPEN | WINDOW_FOCUSED)
     }
 
     /// 演奏の画面が開いた／閉じたと記録する。切り替え後に演奏用を使うかを返す。
     pub fn set_view_open(&self, open: bool) -> bool {
-        self.change(|| self.view_open.store(open, Ordering::Relaxed))
+        self.change(VIEW_OPEN, open)
     }
 
     /// 窓が最前面になった／外れたと記録する。
     pub fn set_window_focused(&self, focused: bool) {
-        self.change(|| self.window_focused.store(focused, Ordering::Relaxed));
+        self.change(WINDOW_FOCUSED, focused);
     }
 
     /// 印を書き換え、演奏用を使うかが変わったときだけ画面へ知らせる。変更後の値を返す。
-    fn change(&self, write: impl FnOnce()) -> bool {
-        let before = self.is_active();
-        write();
-        let after = self.is_active();
+    fn change(&self, bit: u8, on: bool) -> bool {
+        let both = VIEW_OPEN | WINDOW_FOCUSED;
+        let before_flags = if on { self.flags.fetch_or(bit, Ordering::Relaxed) } else { self.flags.fetch_and(!bit, Ordering::Relaxed) };
+        let after_flags = if on { before_flags | bit } else { before_flags & !bit };
+        let (before, after) = (before_flags & both == both, after_flags & both == both);
         if before != after {
             if let Some(events) = self.events() {
                 events.mode_changed(after);

@@ -127,5 +127,9 @@
   "play.pad.more": "+{count} more",
   "play.pad.noKey": "No key",
   "play.pad.label": "{sound}. Assigned keys: {keys}",
-  "play.pad.label.noKey": "{sound}. No assigned key"
+  "play.pad.label.noKey": "{sound}. No assigned key",
+  "play.mode.checking": "Checking…",
+  "play.mode.off": "Drumclack is off (keys make no sound)",
+  "play.hint.off": "Click a pad to hear it.",
+  "play.exit": "To leave this section with the keyboard, press Tab to move to the tabs, then press Enter."
 }

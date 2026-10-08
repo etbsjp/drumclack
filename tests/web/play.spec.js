@@ -11,6 +11,7 @@ const {
   previewCalls,
   allCalls,
   emitFromRust,
+  resolvePlayOpen,
   setRustWindowFocus,
   readWeb,
 } = require("./helpers");
@@ -223,7 +224,7 @@ test.describe("キーの既定動作", () => {
     await expect(id(page, "pad-kick")).toHaveAttribute("data-lit", "false");
   });
 
-  test("演奏の区画では keydown を既定動作ごと止め、どこにも伝えない", async ({ page }) => {
+  test("演奏の区画では（出る道を除いて）keydown を既定動作ごと止め、どこにも伝えない", async ({ page }) => {
     await openPlay(page);
     await id(page, "pad-snare").focus();
     // 一番外側（window の capture）で見る。止めるのは document の capture なので、その手前で見える。
@@ -234,7 +235,7 @@ test.describe("キーの既定動作", () => {
       document.body.addEventListener("keydown", () => (window.__reached += 1));
     });
 
-    for (const key of ["Space", "Enter", "KeyA", "Tab", "ArrowRight", "Escape", "Backspace"]) {
+    for (const key of ["Space", "Enter", "KeyA", "ArrowRight", "Escape", "Backspace", "Control+Tab", "Alt+Tab"]) {
       await page.keyboard.press(key);
     }
 
@@ -242,11 +243,46 @@ test.describe("キーの既定動作", () => {
       prevented: window.__keys.map((event) => event.defaultPrevented),
       reached: window.__reached,
     }));
-    expect(result.prevented).toHaveLength(7);
+    // Control・Alt はそれ自身のキーも1回ずつ届く。止めていないのは「出る道」だけなので、全部が止まっているはず。
+    expect(result.prevented.length).toBeGreaterThanOrEqual(8);
     expect(result.prevented.every(Boolean)).toBe(true);
     expect(result.reached).toBe(0);
-    // Tab でも焦点は動かない。
     await expect(id(page, "pad-snare")).toBeFocused();
+  });
+
+  test("Tab と Shift+Tab は止めない（焦点が動く）。キーボードだけで区画を出られる", async ({ page }) => {
+    await openPlay(page);
+    await id(page, "pad-kick").focus();
+
+    await page.keyboard.press("Tab");
+    await expect(id(page, "pad-snare")).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(id(page, "pad-kick")).toBeFocused();
+
+    // 先頭のパッドから Shift+Tab を重ねると、タブへ出られ、そこで Enter を押すと区画を移る。
+    await page.keyboard.press("Shift+Tab");
+    await expect(page.locator('[role="tab"]:focus')).toHaveCount(1);
+    await id(page, "tab-settings").focus();
+    await page.keyboard.press("Enter");
+    await expect(id(page, "panel-settings")).toBeVisible();
+    expect(await openCalls(page)).toEqual([true, false]);
+  });
+
+  test("タブの上の Space でも区画を移れる。タブの上の矢印と、パッドの上の Enter・Space は止める", async ({ page }) => {
+    await openPlay(page);
+    await id(page, "tab-assign").focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(id(page, "panel-play")).toBeVisible();
+    await expect(id(page, "tab-assign")).toBeFocused();
+
+    await page.keyboard.press("Space");
+    await expect(id(page, "panel-assign")).toBeVisible();
+  });
+
+  test("区画の説明に、キーボードで出る方法を書いてある（パッドの補足に結びつけてある）", async ({ page }) => {
+    await openPlay(page);
+    await expect(id(page, "play-exit")).toHaveText(ja["play.exit"]);
+    await expect(id(page, "pad-kick")).toHaveAttribute("aria-describedby", "play-hint play-exit");
   });
 
   test("ほかの区画に移ると、キーは今までどおり使える", async ({ page }) => {
@@ -311,8 +347,14 @@ test.describe("状態の表示", () => {
     await expect(id(page, "pads")).toHaveAttribute("data-dimmed", "true");
     await expect(id(page, "play-reason")).toBeVisible();
     await expect(id(page, "play-reason")).toHaveText(ja["play.reason.background"]);
-    const opacity = await id(page, "pad-kick").evaluate((el) => Number(getComputedStyle(el).opacity));
-    expect(opacity).toBeLessThan(1);
+    // 薄くはしない（opacity は文字のコントラストを割る）。彩度と枠で背面と分かる。
+    const look = await id(page, "pad-kick").evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { opacity: style.opacity, filter: style.filter, border: style.borderTopStyle };
+    });
+    expect(look.opacity).toBe("1");
+    expect(look.filter).not.toBe("none");
+    expect(look.border).toBe("dashed");
 
     await setRustWindowFocus(page, true);
 
@@ -441,5 +483,84 @@ test.describe("守ること", () => {
     expect(code).toMatch(/addEventListener\("pointerdown"/);
     expect(code).not.toMatch(/addEventListener\("(click|keydown|keyup|keypress)",[^)]*preview/);
     expect(code).not.toMatch(/\bonclick\b/);
+  });
+});
+
+// ============================================================================
+// 確認中・オフ・古い返事・オンにするの焦点（レビュー指摘への対応）
+// ============================================================================
+
+test.describe("状態の確かさ", () => {
+  test("返事を待っている間は「確認中」。背面とは言わず、薄くもしない。返事が来たら演奏用になる", async ({ page }) => {
+    await openPlay(page, {}, { playOpenMode: "manual" });
+
+    await expect(id(page, "play-status")).toHaveAttribute("data-mode", "checking");
+    await expect(id(page, "play-mode")).toHaveText(ja["play.mode.checking"]);
+    await expect(id(page, "play-reason")).toBeHidden();
+    await expect(id(page, "pads")).toHaveAttribute("data-dimmed", "false");
+
+    await resolvePlayOpen(page, 0, true);
+    await expect(id(page, "play-status")).toHaveAttribute("data-mode", "play");
+  });
+
+  test("Rust に知らせられなかったときも「確認中」のまま。背面の理由は出さない", async ({ page }) => {
+    await openPlay(page, {}, { playOpenMode: "fail" });
+
+    await expect(id(page, "play-status")).toHaveAttribute("data-mode", "checking");
+    await expect(id(page, "play-reason")).toBeHidden();
+    await expect(id(page, "pads")).toHaveAttribute("data-dimmed", "false");
+  });
+
+  test("古い返事は捨てる（あとから知らせた問い合わせの結果が残る）", async ({ page }) => {
+    await openPlay(page, {}, { playOpenMode: "manual" });
+    // 窓の前後が変わって、2回目の問い合わせを出す（1回目の返事はまだ）。
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect.poll(async () => (await openCalls(page)).length).toBe(2);
+
+    // 2回目に「背面（偽）」が返り、そのあと遅れて1回目の「演奏用（真）」が返る。
+    await resolvePlayOpen(page, 1, false);
+    await expect(id(page, "play-status")).toHaveAttribute("data-mode", "typing");
+    await resolvePlayOpen(page, 0, true);
+
+    await page.waitForTimeout(100);
+    await expect(id(page, "play-status")).toHaveAttribute("data-mode", "typing");
+  });
+
+  test("オフのあいだは「いまはオフです」と書き、演奏用の割り当てで鳴らしているとは書かない", async ({ page }) => {
+    await openPlay(page, { enabled: false });
+
+    await expect(id(page, "play-status")).toHaveAttribute("data-mode", "off");
+    await expect(id(page, "play-mode")).toHaveText(ja["play.mode.off"]);
+    await expect(id(page, "play-hint")).toHaveText(ja["play.hint.off"]);
+    // オフ中は背面の理由も出さない（オフが先に伝わる）。
+    await setRustWindowFocus(page, false);
+    await expect(id(page, "play-reason")).toBeHidden();
+    await expect(id(page, "play-mode")).toHaveText(ja["play.mode.off"]);
+  });
+
+  test("「オンにする」を押すと、消える前に焦点が最初のパッドへ移る", async ({ page }) => {
+    await openPlay(page, { enabled: false });
+
+    await id(page, "play-turn-on").click();
+
+    await expect(id(page, "play-off")).toBeHidden();
+    await expect(id(page, "pad-kick")).toBeFocused();
+  });
+
+  test("状態の文は、文言が変わらないあいだは書き換えない（読み上げが余計に走らない）", async ({ page }) => {
+    await openPlay(page);
+    await id(page, "play-mode").evaluate((el) => {
+      window.__modeWrites = 0;
+      new MutationObserver((records) => (window.__modeWrites += records.length)).observe(el, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    });
+
+    await emitFromRust(page, "drum-played", "kick");
+    await page.evaluate(() => window.drumclackPlay.render());
+
+    expect(await page.evaluate(() => window.__modeWrites)).toBe(0);
   });
 });

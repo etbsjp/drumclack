@@ -74,6 +74,8 @@ async function openApp(page, options = {}) {
     failOpenSettings: false,
     failRestart: false,
     failPreview: false,
+    // set_play_view_open の返事: "normal" 即答 / "fail" 失敗 / "manual" 自分で返す（resolvePlayOpen）。
+    playOpenMode: "normal",
     malformedSettings: false,
     hangSettings: false,
     ...options,
@@ -86,6 +88,7 @@ async function openApp(page, options = {}) {
       settings: JSON.parse(JSON.stringify(cfg.settings)),
       // Rust から届くイベントの受け口（イベント名 → 受け取る関数の並び）と、Rust 側の演奏の条件。
       listeners: {},
+      pendingOpen: [], // playOpenMode が manual のとき、まだ返していない set_play_view_open の返事
       playViewOpen: false,
       windowFocused: true,
     };
@@ -145,6 +148,10 @@ async function openApp(page, options = {}) {
           }
           if (cmd === "set_play_view_open") {
             fake.playViewOpen = args.open === true;
+            if (fake.cfg.playOpenMode === "fail") throw new Error("play open refused (test)");
+            if (fake.cfg.playOpenMode === "manual") {
+              return new Promise((resolve) => fake.pendingOpen.push(resolve));
+            }
             // 本物と同じく、切り替え後に演奏用の割り当てを使っているかを返す。
             return fake.playViewOpen && fake.windowFocused;
           }
@@ -195,6 +202,11 @@ function setRustWindowFocus(page, focused) {
       for (const handler of fake.listeners["play-mode-changed"] || []) handler({ payload: after });
     }
   }, focused);
+}
+
+/** 返していない set_play_view_open の返事を、`index` 番目（0 から）から順に指定した値で返す。 */
+function resolvePlayOpen(page, index, value) {
+  return page.evaluate(({ at, answer }) => window.__fake.pendingOpen[at](answer), { at: index, answer: value });
 }
 
 /** 画面から出た `preview_sound` の呼び出し（引数）。 */
@@ -268,6 +280,7 @@ module.exports = {
   updateCalls,
   previewCalls,
   emitFromRust,
+  resolvePlayOpen,
   setRustWindowFocus,
   currentSettings,
   allCalls,

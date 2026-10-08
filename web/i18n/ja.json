@@ -127,5 +127,9 @@
   "play.pad.more": "ほか{count}個",
   "play.pad.noKey": "キーなし",
   "play.pad.label": "{sound}。割り当てキー: {keys}",
-  "play.pad.label.noKey": "{sound}。割り当てキーなし"
+  "play.pad.label.noKey": "{sound}。割り当てキーなし",
+  "play.mode.checking": "いま: 確認中",
+  "play.mode.off": "いまはオフです（キーを押しても鳴りません）",
+  "play.hint.off": "パッドをクリックすると、試し聴きできます。",
+  "play.exit": "キーボードで区画を出るには、Tab でタブへ移り、Enter を押します。"
 }

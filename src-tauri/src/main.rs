@@ -180,6 +180,15 @@ fn main() {
             restart_app,
             set_play_view_open
         ])
+        // 画面が読み込まれ直したら（再読み込み・クラッシュ後）、演奏の区画は閉じた扱いに戻す。
+        // 画面が閉じた知らせを出せないまま消えても、演奏用の割り当てが残り続けないように。
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                if let Some(state) = webview.app_handle().try_state::<Arc<AppState>>() {
+                    state.assignments.play_mode.set_view_open(false);
+                }
+            }
+        })
         .on_window_event(|window, event| {
             // 窓が最前面かを、演奏用の割り当てを使う条件に写す（別のアプリに切り替えたらタイピング用に戻る）。
             if let tauri::WindowEvent::Focused(focused) = event {
