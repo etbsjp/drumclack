@@ -80,7 +80,15 @@ async function openApp(page, options = {}) {
   };
 
   await page.addInitScript((cfg) => {
-    const fake = { cfg, calls: [], settings: JSON.parse(JSON.stringify(cfg.settings)) };
+    const fake = {
+      cfg,
+      calls: [],
+      settings: JSON.parse(JSON.stringify(cfg.settings)),
+      // Rust から届くイベントの受け口（イベント名 → 受け取る関数の並び）と、Rust 側の演奏の条件。
+      listeners: {},
+      playViewOpen: false,
+      windowFocused: true,
+    };
     window.__fake = fake;
 
     // 本物と同じく、返すたびに別のオブジェクトにする（Rust との間は JSON で渡るため）。
@@ -135,10 +143,20 @@ async function openApp(page, options = {}) {
             if (fake.cfg.failRestart) throw new Error("restart refused (test)");
             return null;
           }
+          if (cmd === "set_play_view_open") {
+            fake.playViewOpen = args.open === true;
+            // 本物と同じく、切り替え後に演奏用の割り当てを使っているかを返す。
+            return fake.playViewOpen && fake.windowFocused;
+          }
           throw new Error(`知らない命令: ${cmd}`);
         },
       },
-      event: { listen: async () => () => {} },
+      event: {
+        listen: async (name, handler) => {
+          (fake.listeners[name] = fake.listeners[name] || []).push(handler);
+          return () => {};
+        },
+      },
     };
   }, config);
 
@@ -151,6 +169,32 @@ async function openApp(page, options = {}) {
 /** 画面から出た `update_settings` の呼び出し（命令名と引数）。 */
 function updateCalls(page) {
   return page.evaluate(() => window.__fake.calls.filter((call) => call.cmd === "update_settings"));
+}
+
+/** Rust がイベントを送ったことにする（画面が受け取る関数を、本物と同じ形 `{ payload }` で呼ぶ）。 */
+function emitFromRust(page, eventName, payload) {
+  return page.evaluate(
+    ({ name, value }) => {
+      for (const handler of window.__fake.listeners[name] || []) handler({ payload: value });
+    },
+    { name: eventName, value: payload },
+  );
+}
+
+/**
+ * Rust の窓のフォーカスが変わったことにする。演奏用の割り当てを使うかが変わったら、本物と同じく
+ * `play-mode-changed` を送る。
+ */
+function setRustWindowFocus(page, focused) {
+  return page.evaluate((next) => {
+    const fake = window.__fake;
+    const before = fake.playViewOpen && fake.windowFocused;
+    fake.windowFocused = next;
+    const after = fake.playViewOpen && fake.windowFocused;
+    if (before !== after) {
+      for (const handler of fake.listeners["play-mode-changed"] || []) handler({ payload: after });
+    }
+  }, focused);
 }
 
 /** 画面から出た `preview_sound` の呼び出し（引数）。 */
@@ -223,6 +267,8 @@ module.exports = {
   openApp,
   updateCalls,
   previewCalls,
+  emitFromRust,
+  setRustWindowFocus,
   currentSettings,
   allCalls,
   setStatus,

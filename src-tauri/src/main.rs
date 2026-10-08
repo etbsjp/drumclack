@@ -20,6 +20,7 @@ mod key_tables;
 mod key_tracker;
 mod kick;
 mod permission;
+mod play_mode;
 mod resident;
 mod settings;
 mod settings_store;
@@ -65,6 +66,13 @@ fn update_settings(
 fn preview_sound(app_state: tauri::State<'_, Arc<AppState>>, sound: String) -> Result<(), String> {
     let engine = app_state.audio_engine.as_ref().ok_or("音声デバイスが使えません")?;
     assignment::preview(engine, &sound)
+}
+
+/// 演奏の画面が開いた／閉じたと知らせる（画面用の命令その6）。窓が最前面のあいだだけ演奏用の割り当てを使う。
+/// 切り替え後に演奏用を使っているかを返す。
+#[tauri::command]
+fn set_play_view_open(app_state: tauri::State<'_, Arc<AppState>>, open: bool) -> bool {
+    app_state.assignments.play_mode.set_view_open(open)
 }
 
 /// 入力監視の設定画面を開く（画面用の命令その4）。macOS 以外ではエラーを返す。
@@ -140,6 +148,8 @@ fn main() {
             }
 
             app.manage(app_state.clone());
+            // 演奏用の割り当てで鳴らした音の名前を、メインの窓へ送る出口を付ける。
+            app_state.assignments.play_mode.set_events(Arc::new(play_mode::TauriPlayEvents::new(app.handle().clone())));
 
             // 常駐: トレイとメニューを作り、起動時に窓を出すかを決め、状態の見張りを始める。
             // 窓を出すのは、初めて音が鳴るまで／入力監視が未許可／音声デバイスの初期化失敗のとき。
@@ -167,9 +177,18 @@ fn main() {
             update_settings,
             preview_sound,
             open_input_monitoring_settings,
-            restart_app
+            restart_app,
+            set_play_view_open
         ])
         .on_window_event(|window, event| {
+            // 窓が最前面かを、演奏用の割り当てを使う条件に写す（別のアプリに切り替えたらタイピング用に戻る）。
+            if let tauri::WindowEvent::Focused(focused) = event {
+                if window.label() == "main" {
+                    if let Some(state) = window.app_handle().try_state::<Arc<AppState>>() {
+                        state.assignments.play_mode.set_window_focused(*focused);
+                    }
+                }
+            }
             // 窓を閉じても終了せず、隠して常駐を続ける（Mac は Dock からも外す）。
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

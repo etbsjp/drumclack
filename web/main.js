@@ -424,6 +424,7 @@ function renderControls() {
   renderSettingsControls();
   // 割り当ての区画も、設定が変わるたび・言語が変わるたびに描き直す（起動前は何もしない）。
   window.drumclackAssign.render();
+  window.drumclackPlay.render();
 }
 
 function renderSettingsControls() {
@@ -459,6 +460,14 @@ const assignContext = {
   i18n,
   getSnapshot: () => view.settings,
   resolveLayout,
+  sendUpdate: (patch) => sendUpdate(patch),
+};
+
+/** 演奏の区画（play.js）へ、画面の状態と、設定の更新の入口を渡す。 */
+const playContext = {
+  i18n,
+  assign: window.drumclackAssign,
+  getSnapshot: () => view.settings,
   sendUpdate: (patch) => sendUpdate(patch),
 };
 
@@ -592,6 +601,8 @@ function bindTabs() {
     // 開いていた選択肢は閉じ、出したばかりの区画は幅を測り直す。
     window.drumclackAssign.close();
     window.drumclackAssign.render();
+    // 演奏の区画を開いている間だけ、Rust が演奏用の割り当てを使う（キーの既定動作も止める）。
+    window.drumclackPlay.setOpen(tab.dataset.testid === "tab-play");
   }
 
   // メニューバー／トレイの「演奏モードを開く」から、Rust が窓を出したあとに呼ぶ入口。
@@ -649,6 +660,8 @@ async function start() {
     view.settings = snapshot;
   }
   await assignReady;
+  // 演奏の区画は、割り当ての元データ（パッドに出すキー）が読めてから起こす。
+  await window.drumclackPlay.init(playContext);
   renderControls();
   renderNotices();
   renderStatus();

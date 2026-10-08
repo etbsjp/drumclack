@@ -66,7 +66,7 @@
         <p class="notice notice-error" data-testid="settings-error" role="alert" hidden></p>
       </div>
 
-      <!-- 3つの区画。割り当てと演奏の中身は後の issue（#18・#19）。 -->
+      <!-- 3つの区画（設定／割り当て／演奏）。 -->
       <div class="tabs" role="tablist" data-i18n-attr="aria-label:nav.label">
         <button
           type="button"
@@ -268,7 +268,21 @@
         data-testid="panel-play"
         hidden
       >
-        <p class="placeholder" data-i18n="play.placeholder"></p>
+        <div class="play" data-testid="play">
+          <!-- いま演奏用かタイピング用かを常に出す。変わったときだけ読み上げる（1打ごとには読み上げない）。 -->
+          <div class="play-status" data-testid="play-status" data-mode="typing" role="status">
+            <p class="play-mode" data-testid="play-mode"></p>
+            <p class="field-hint play-reason" data-testid="play-reason" hidden></p>
+          </div>
+
+          <div class="notice notice-warn play-off" data-testid="play-off" hidden>
+            <p class="notice-text" data-i18n="play.off"></p>
+            <button type="button" class="issue-button" data-testid="play-turn-on" data-i18n="play.turnOn"></button>
+          </div>
+
+          <ul class="pads" data-testid="pads" data-dimmed="false"></ul>
+          <p class="field-hint" data-i18n="play.hint"></p>
+        </div>
       </section>
     </main>
 
@@ -277,6 +291,7 @@
     <script src="./i18n.js"></script>
     <script src="./layouts.js"></script>
     <script src="./assign.js"></script>
+    <script src="./play.js"></script>
     <script src="./main.js"></script>
   </body>
 </html>

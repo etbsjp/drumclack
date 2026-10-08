@@ -49,6 +49,14 @@
     },
 
     /**
+     * 演奏の区画を開いた／閉じたと Rust に知らせる。窓が最前面のあいだだけ演奏用の割り当てを使い、
+     * 返事は「いま演奏用の割り当てを使っているか」（真偽）。
+     */
+    setPlayViewOpen(open) {
+      return tauri().core.invoke("set_play_view_open", { open });
+    },
+
+    /**
      * Rust からのイベントを受け取る。解除する関数を返す。
      * 使うイベントを足すときは、capabilities に `core:event:allow-listen` も足す。
      */

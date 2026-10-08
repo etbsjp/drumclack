@@ -829,5 +829,22 @@
     render: contained(render),
     /** 区画を切り替えるとき（開いている選択肢を閉じる）。 */
     close: contained(() => closeMenu(false)),
+    /** 音の表示名（演奏の区画のパッドが使う）。 */
+    soundLabel: (sound) => soundName(sound),
+    /**
+     * 組（"typing" | "play"）の割り当てを音ごとにまとめた、キーの表示名の一覧 `{ kick: ["A", "Space"], ... }`。
+     * 元データを読めていないときは空。演奏の区画のパッドが、割り当てキーを出すのに使う。
+     */
+    keysBySound: (set) => {
+      const bySound = {};
+      if (!state.data || !state.ctx) return bySound;
+      const assignments = assignmentsOf(set);
+      for (const code of Object.keys(state.data.groups)) {
+        const { sound } = resolveKey(set, code, assignments, false);
+        if (sound === NONE) continue;
+        (bySound[sound] = bySound[sound] || []).push(keyDisplayName(code));
+      }
+      return bySound;
+    },
   };
 })();

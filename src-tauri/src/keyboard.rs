@@ -46,7 +46,7 @@ pub fn spawn_listener(engine: Arc<AudioEngine>, state: Arc<AppState>) {
 /// 監視から届いたイベントを状態機械に通し、新しく押されたときだけ発音を試みる。
 ///
 /// キーの位置は、ここで `state.assignments`（割り当ての検索と、オン／オフ・無音の判定）に渡して
-/// 音の名前にし、使い切る。オフのときや無音のキーのときは、発音を要求しない（強弱の間隔にも数えない）。
+/// 音の名前にし、使い切る。演奏用の割り当てで鳴らしたときだけ、音の名前を画面へ知らせる。オフのときや無音のキーのときは、発音を要求しない（強弱の間隔にも数えない）。
 /// 強弱の時刻（単調時計）は、打鍵を受け取ったこの時点で取る。
 fn dispatch(
     tracker: &mut KeyTracker,
@@ -68,10 +68,14 @@ fn dispatch_at(
     // OS からキーのイベントが届いた事実だけを残す（無音のキーでも、どのキーでも同じ）。
     state.note_key_event_received();
     if let Some(position) = tracker.handle(event) {
-        if let Some(sound_name) = state.assignments.sound_name_for_key(position) {
+        if let Some(hit) = state.assignments.hit_for_key(position) {
             // 音量は、遅延テスト用の待ちより前に（打鍵の時点の時刻で）決める。
             let volume = state.assignments.dynamics.next_volume(hit_at);
-            handle_key_down(engine.clone(), state.clone(), sound_name, volume);
+            handle_key_down(engine.clone(), state.clone(), hit.sound_name, volume);
+            // 画面へ送るのは、演奏用の割り当てで鳴らした音の名前だけ（タイピング用の音は送らない）。
+            if hit.from_play_set {
+                state.assignments.play_mode.notify_played(hit.sound_name);
+            }
         }
     }
 }
@@ -784,5 +788,123 @@ mod dispatch_tests {
         let volumes: Vec<f32> = engine.drain_requests_for_test().into_iter().map(|r| r.volume).collect();
         assert_eq!(volumes.len(), 2);
         assert!(volumes.iter().all(|v| *v > 0.75), "打鍵の時刻でなく待った後の時計で測っている: {volumes:?}");
+    }
+
+    // ---- 演奏モード（演奏用の割り当てと、画面への「鳴った音の名前」の知らせ） ----
+
+    /// 知らせを溜める出口を付けた組み立て。
+    fn rig_with_recorder() -> (Rig, Arc<crate::play_mode::test_support::Recorder>) {
+        let rig = Rig::new(None);
+        let recorder = Arc::new(crate::play_mode::test_support::Recorder::default());
+        rig.state.assignments.play_mode.set_events(recorder.clone());
+        (rig, recorder)
+    }
+
+    /// このテストが使う演奏用の配置（既定の配置とは別。既定の配置を決め直しても、このテストは変わらない）。
+    const TEST_LAYOUT: [(&str, &str); 9] = [
+        ("KeyA", "kick"),
+        ("KeyS", "snare"),
+        ("KeyD", "rim"),
+        ("KeyF", "clap"),
+        ("KeyJ", "hat_closed"),
+        ("KeyK", "hat_open"),
+        ("KeyL", "tom_high"),
+        ("Semicolon", "tom_low"),
+        ("Space", "kick"),
+    ];
+
+    /// 演奏用の配置を [`TEST_LAYOUT`] にそろえる。
+    fn apply_test_layout(rig: &Rig) {
+        let keys: serde_json::Map<String, serde_json::Value> =
+            TEST_LAYOUT.iter().map(|(key, sound)| (key.to_string(), json!(sound))).collect();
+        rig.store.update(&json!({"play": {"keys": keys}})).unwrap();
+    }
+
+    /// 演奏用の配置をそろえたうえで、演奏の画面が開いていて窓が最前面の状態にする。
+    fn start_playing(rig: &Rig) {
+        apply_test_layout(rig);
+        rig.state.assignments.play_mode.set_view_open(true);
+        rig.state.assignments.play_mode.set_window_focused(true);
+    }
+
+    /// 割り当てのあるキーも無いキーも含めて、全キーを1回ずつ打つ。
+    fn tap_every_key(rig: &mut Rig) {
+        for &position in KeyPosition::ALL {
+            rig.tap(position);
+        }
+    }
+
+    #[test]
+    fn nothing_is_sent_to_the_screen_unless_the_play_view_is_open_and_frontmost() {
+        // 演奏の画面が閉じている／窓が最前面でない／どちらでもない、の3通りで、全キーを打っても知らせは0件。
+        for (view_open, focused) in [(false, true), (true, false), (false, false)] {
+            let (mut rig, recorder) = rig_with_recorder();
+            // 演奏用の割り当てで鳴らせば知らせが出る状況で、遮断が効いていることを確かめる。
+            apply_test_layout(&rig);
+            rig.state.assignments.play_mode.set_view_open(view_open);
+            rig.state.assignments.play_mode.set_window_focused(focused);
+
+            tap_every_key(&mut rig);
+
+            assert_eq!(recorder.sounds().len(), 0, "画面 {view_open}・最前面 {focused}");
+        }
+    }
+
+    #[test]
+    fn play_assignments_sound_and_notify_only_the_sound_name_while_playing() {
+        let (mut rig, recorder) = rig_with_recorder();
+        start_playing(&rig);
+
+        // 演奏用の配置で鳴り、同じ名前が知らされる。
+        let cases = TEST_LAYOUT;
+        for (key, sound) in cases {
+            assert_eq!(rig.tap_named(key), [sound], "{key} の発音");
+        }
+        // 無音のキーは鳴らさず、知らせもしない。
+        assert_eq!(rig.tap_named("KeyG").len(), 0);
+        assert_eq!(rig.tap_named("Enter").len(), 0);
+
+        // 知らせは、鳴った音の名前だけ（キーの名前・時刻は含まない）。順番も鳴らした順。
+        let expected: Vec<String> = cases.iter().map(|(_, sound)| sound.to_string()).collect();
+        assert_eq!(recorder.sounds(), expected);
+        let sound_names: Vec<&str> = crate::settings::Sound::ALL.iter().map(|sound| sound.name()).collect();
+        assert!(recorder.sounds().iter().all(|sent| sound_names.contains(&sent.as_str())));
+    }
+
+    #[test]
+    fn switching_to_another_app_goes_back_to_typing_assignments_and_stops_notifying() {
+        let (mut rig, recorder) = rig_with_recorder();
+        start_playing(&rig);
+        assert_eq!(rig.tap_named("KeyA"), ["kick"]);
+        assert_eq!(recorder.sounds(), ["kick"]);
+
+        // 別のアプリに切り替える（窓が最前面でなくなる）。
+        rig.state.assignments.play_mode.set_window_focused(false);
+        assert_eq!(rig.tap_named("KeyA"), ["hat_closed"], "タイピング用に戻る");
+        assert_eq!(recorder.sounds(), ["kick"], "戻った後の音は知らせない");
+
+        // 戻ってくると、また演奏用。
+        rig.state.assignments.play_mode.set_window_focused(true);
+        assert_eq!(rig.tap_named("KeyA"), ["kick"]);
+        assert_eq!(recorder.sounds(), ["kick", "kick"]);
+
+        // 区画を移ってもタイピング用に戻る。
+        rig.state.assignments.play_mode.set_view_open(false);
+        assert_eq!(rig.tap_named("KeyA"), ["hat_closed"]);
+        assert_eq!(recorder.sounds().len(), 2);
+    }
+
+    #[test]
+    fn play_assignments_follow_the_play_overrides_and_the_off_switch() {
+        let (mut rig, recorder) = rig_with_recorder();
+        start_playing(&rig);
+        rig.store.update(&json!({"play": {"keys": {"KeyG": "tom_low"}}, "typing": {"keys": {"KeyA": "clap"}}})).unwrap();
+        assert_eq!(rig.tap_named("KeyG"), ["tom_low"], "演奏用の上書きが効く");
+        assert_eq!(rig.tap_named("KeyA"), ["kick"], "タイピング用の上書きは演奏用には効かない");
+
+        // オフの間は、鳴らさず知らせもしない（監視は続く）。
+        rig.store.set_enabled(false);
+        tap_every_key(&mut rig);
+        assert_eq!(recorder.sounds(), ["tom_low", "kick"]);
     }
 }

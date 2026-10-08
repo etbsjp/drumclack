@@ -118,5 +118,14 @@
   "group.control": "Tab, Esc, function keys",
   "group.navigation": "Arrows, Home/End, PageUp/PageDown",
   "group.modifiers": "Modifiers (Shift, Ctrl, Alt, Cmd/Win, ...)",
-  "play.placeholder": "You will be able to play the drums here."
+  "play.mode.play": "Now using the play assignments",
+  "play.mode.typing": "Now using the typing assignments",
+  "play.reason.background": "The Drumclack window is in the background, so keys sound the way they do while typing. Click this window to bring it to the front and switch to the play assignments.",
+  "play.off": "Drumclack is off, so pressing keys makes no sound. You can still click a pad to hear it.",
+  "play.turnOn": "Turn on",
+  "play.hint": "Click a pad, or press the key shown on it. When you switch to another app, keys go back to the typing assignments.",
+  "play.pad.more": "+{count} more",
+  "play.pad.noKey": "No key",
+  "play.pad.label": "{sound}. Assigned keys: {keys}",
+  "play.pad.label.noKey": "{sound}. No assigned key"
 }

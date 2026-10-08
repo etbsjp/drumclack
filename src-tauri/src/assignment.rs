@@ -14,14 +14,13 @@ use std::sync::{Arc, RwLock};
 use crate::audio::AudioEngine;
 use crate::dynamics::Dynamics;
 use crate::key_position::KeyPosition;
+use crate::play_mode::PlayMode;
 use crate::settings::{Assignments, KeyGroup, Settings, Sound};
 
 /// 割り当ての組。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AssignmentSet {
     Typing,
-    // 演奏用への切り替え条件（演奏の画面が最前面）は後の issue。それまでは表を作るだけで使われない。
-    #[allow(dead_code)]
     Play,
 }
 
@@ -179,6 +178,15 @@ pub struct LiveAssignments {
     tables: RwLock<Arc<Tables>>,
     /// 強弱（打鍵の間隔で音量を決める）。幅は設定の `dynamics` で、`apply` が差し替える。
     pub dynamics: Dynamics,
+    /// 演奏用の割り当てを使う条件（演奏の画面が開いていて、窓が最前面）と、画面への知らせの出口。
+    pub play_mode: PlayMode,
+}
+
+/// 打鍵で鳴らす音の名前と、どちらの組で決めたか。
+pub struct KeyHit {
+    pub sound_name: &'static str,
+    /// 演奏用の割り当てで決めたか。画面へ音の名前を送ってよいのは、真のときだけ。
+    pub from_play_set: bool,
 }
 
 impl LiveAssignments {
@@ -189,6 +197,7 @@ impl LiveAssignments {
             enabled: AtomicBool::new(settings.enabled),
             tables: RwLock::new(Arc::new(Tables::build(&settings))),
             dynamics: Dynamics::new(settings.dynamics),
+            play_mode: PlayMode::new(),
         }
     }
 
@@ -200,21 +209,25 @@ impl LiveAssignments {
         self.dynamics.set_width(settings.dynamics);
     }
 
-    /// 今使う割り当ての組。演奏用への切り替え条件（演奏の画面が最前面）は後の issue。
-    fn active_set(&self) -> AssignmentSet {
-        AssignmentSet::Typing
+    /// 新しく押されたキーで鳴らす音の名前。オフのとき・無音のキーのときは `None`（発音を要求しない）。
+    /// 監視は続けたまま、鳴らす直前で捨てる。（本体は [`Self::hit_for_key`] を使う。テストが音の名前だけを見るための近道）
+    #[cfg(test)]
+    pub fn sound_name_for_key(&self, position: KeyPosition) -> Option<&'static str> {
+        self.hit_for_key(position).map(|hit| hit.sound_name)
     }
 
-    /// 新しく押されたキーで鳴らす音の名前。オフのとき・無音のキーのときは `None`（発音を要求しない）。
-    /// 監視は続けたまま、鳴らす直前で捨てる。
-    pub fn sound_name_for_key(&self, position: KeyPosition) -> Option<&'static str> {
+    /// [`Self::sound_name_for_key`] に、どちらの組で決めたかを添えたもの。組の判定と音の検索を1回で済ませる
+    /// （判定と検索の間に組が切り替わって、タイピング用の音が演奏用として画面へ送られることがないように）。
+    pub fn hit_for_key(&self, position: KeyPosition) -> Option<KeyHit> {
         if !self.enabled.load(Ordering::Relaxed) {
             return None;
         }
         let tables = self.tables.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-        match tables.get(self.active_set()).sound_for(position) {
+        let from_play_set = self.play_mode.is_active();
+        let set = if from_play_set { AssignmentSet::Play } else { AssignmentSet::Typing };
+        match tables.get(set).sound_for(position) {
             Sound::None => None,
-            sound => Some(sound.name()),
+            sound => Some(KeyHit { sound_name: sound.name(), from_play_set }),
         }
     }
 }

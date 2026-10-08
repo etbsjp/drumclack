@@ -118,5 +118,14 @@
   "group.control": "Tab・Esc・ファンクション",
   "group.navigation": "矢印・Home／End・PageUp／PageDown",
   "group.modifiers": "修飾キー（Shift・Ctrl・Alt・Cmd／Win など）",
-  "play.placeholder": "ここでドラムを叩けるようになります。"
+  "play.mode.play": "いま: 演奏用の割り当てで鳴らしています",
+  "play.mode.typing": "いま: タイピング用の割り当てで鳴らしています",
+  "play.reason.background": "Drumclack の窓が背面にあるため、普段のタイピング用の鳴り方です。この窓をクリックして前面に出すと、演奏用に切り替わります。",
+  "play.off": "オフになっているため、キーを押しても鳴りません。パッドをクリックすると試し聴きはできます。",
+  "play.turnOn": "オンにする",
+  "play.hint": "パッドをクリックするか、パッドに書かれたキーを押して叩きます。別のアプリに切り替えると、普段のタイピング用に戻ります。",
+  "play.pad.more": "ほか{count}個",
+  "play.pad.noKey": "キーなし",
+  "play.pad.label": "{sound}。割り当てキー: {keys}",
+  "play.pad.label.noKey": "{sound}。割り当てキーなし"
 }
