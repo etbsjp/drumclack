@@ -8,6 +8,7 @@
 //! Tauri の窓・メニュー・トレイへのつなぎ込みは `tray.rs`。ここは打鍵の内容を一切扱わない
 //! （入るのは「オンか」「許可があるか」「音声デバイスが使えるか」「音が鳴ったか」の真偽だけ）。
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::settings::Language;
@@ -36,10 +37,50 @@ pub fn icon_state(enabled: bool, input_permission_ok: bool, audio_ok: bool) -> I
     }
 }
 
-/// 起動時に窓を出すか。出すのは、初めて音が鳴るまで／入力監視が未許可／音声デバイスの初期化に失敗、のどれか。
+/// 起動時に窓を出すか。出すのは、初めて音が鳴るまで／入力監視が未許可／音声デバイスの初期化に失敗／
+/// 窓のボタンから起動し直された（`restarted_from_window`）、のどれか。
 /// どれにも当たらなければ、窓は出さずに常駐だけする。
-pub fn show_window_at_launch(first_sound_done: bool, input_permission_ok: bool, audio_ok: bool) -> bool {
-    !first_sound_done || !input_permission_ok || !audio_ok
+pub fn show_window_at_launch(
+    first_sound_done: bool,
+    input_permission_ok: bool,
+    audio_ok: bool,
+    restarted_from_window: bool,
+) -> bool {
+    !first_sound_done || !input_permission_ok || !audio_ok || restarted_from_window
+}
+
+// ============================================================================
+// 「次の起動では窓を出す」印
+// ============================================================================
+
+/// 印のファイル名（設定フォルダの中）。設定（settings.json）には入れない。次の起動で1回読んで消すだけの
+/// 使い捨てで、設定の形（版・画面とのやり取り）を変えずに済ませるため。
+pub const SHOW_WINDOW_MARK_FILE_NAME: &str = "show_window_next_launch";
+
+/// 窓のボタンから起動し直す直前に呼ぶ。次の起動で窓を出すための印を設定フォルダに残す。
+pub fn mark_show_window_next_launch(config_dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(config_dir)?;
+    std::fs::write(config_dir.join(SHOW_WINDOW_MARK_FILE_NAME), b"1")
+}
+
+/// 印があれば消して `true` を返す。起動のたびに必ず1回呼ぶ（印を残したままにすると、次の起動でも窓が出てしまう）。
+/// フォルダが分からない・印がない・消せないときは `false`。
+/// 「消せた」を「印があった」とみなす（`remove_file` の成功だけで判断する）。消せなかったときは窓を出さない側に
+/// 倒れ、印が残って次の起動でも窓が出続ける事故より、窓が出ない方を選ぶ。
+pub fn take_show_window_mark(config_dir: Option<&Path>) -> bool {
+    config_dir.map(|dir| std::fs::remove_file(dir.join(SHOW_WINDOW_MARK_FILE_NAME)).is_ok()).unwrap_or(false)
+}
+
+/// 起動時に窓を出すかを決める。印は、ほかの条件に当たっていても必ず消す（読んで消す順序を守るため、
+/// 先に印を取り出してから判断に渡す）。
+pub fn decide_window_at_launch(
+    config_dir: Option<&Path>,
+    first_sound_done: bool,
+    input_permission_ok: bool,
+    audio_ok: bool,
+) -> bool {
+    let restarted_from_window = take_show_window_mark(config_dir);
+    show_window_at_launch(first_sound_done, input_permission_ok, audio_ok, restarted_from_window)
 }
 
 // ---- アイコンの絵 ------------------------------------------------------------------------------
@@ -464,11 +505,52 @@ mod tests {
     }
 
     #[test]
-    fn window_is_shown_at_launch_only_in_the_three_agreed_cases() {
-        assert!(!show_window_at_launch(true, true, true), "全部そろっていれば窓は出さない");
-        assert!(show_window_at_launch(false, true, true), "初めて音が鳴るまで");
-        assert!(show_window_at_launch(true, false, true), "入力監視が未許可");
-        assert!(show_window_at_launch(true, true, false), "音声デバイスの初期化に失敗");
+    fn window_is_shown_at_launch_only_in_the_four_agreed_cases() {
+        assert!(!show_window_at_launch(true, true, true, false), "全部そろっていれば窓は出さない");
+        assert!(show_window_at_launch(false, true, true, false), "初めて音が鳴るまで");
+        assert!(show_window_at_launch(true, false, true, false), "入力監視が未許可");
+        assert!(show_window_at_launch(true, true, false, false), "音声デバイスの初期化に失敗");
+        assert!(show_window_at_launch(true, true, true, true), "窓のボタンから起動し直したあと");
+    }
+
+    #[test]
+    fn restart_mark_shows_the_window_once_even_when_first_sound_is_done() {
+        let dir = TempDir::new();
+        // 起動し直しの直前に印を残す → 次の起動は、ほかの条件が全部そろっていても窓を出す。
+        mark_show_window_next_launch(&dir.0).unwrap();
+        assert!(
+            decide_window_at_launch(Some(&dir.0), true, true, true),
+            "印を見ないと、first_sound_done が真のとき窓が出ない"
+        );
+        assert!(!dir.0.join(SHOW_WINDOW_MARK_FILE_NAME).exists(), "印は起動時に消す");
+        // その次の起動（印なし）は、今までどおり窓を出さない。
+        assert!(!decide_window_at_launch(Some(&dir.0), true, true, true), "印がなければ出さない");
+    }
+
+    #[test]
+    fn restart_mark_is_consumed_even_when_another_condition_already_shows_the_window() {
+        let dir = TempDir::new();
+        mark_show_window_next_launch(&dir.0).unwrap();
+        // 入力監視が未許可で窓が出る起動でも、印は消える（次の起動に持ち越さない）。
+        assert!(decide_window_at_launch(Some(&dir.0), true, false, true));
+        assert!(!dir.0.join(SHOW_WINDOW_MARK_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn restart_mark_works_without_a_config_dir_or_mark() {
+        assert!(!take_show_window_mark(None), "設定フォルダが分からなければ印なし");
+        let dir = TempDir::new();
+        assert!(!take_show_window_mark(Some(&dir.0)), "印がなければ偽");
+        assert!(!decide_window_at_launch(None, true, true, true), "通常の起動は窓を出さない");
+    }
+
+    #[test]
+    fn restart_mark_creates_the_config_dir_and_does_not_touch_settings() {
+        let dir = TempDir::new();
+        let nested = dir.0.join("not-yet");
+        mark_show_window_next_launch(&nested).unwrap();
+        assert!(nested.join(SHOW_WINDOW_MARK_FILE_NAME).exists());
+        assert!(!nested.join("settings.json").exists(), "印は設定ファイルには書かない");
     }
 
     #[test]
