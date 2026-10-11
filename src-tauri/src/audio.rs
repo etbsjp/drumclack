@@ -339,21 +339,18 @@ impl CpalBackend {
     }
 }
 
-/// 出力先の情報を組み立てる。機器名が取れないときは `Err`（取れなかった名前を代わりの文字列で
-/// 埋めると、問い合わせの失敗が「別の出力先に変わった」と見えて、動いている出口を誤って手放すため）。
+/// 出力先の情報を組み立てる。機器名が取れないときは名前なし（`None`）にして、その出口でも鳴らす。
+/// 名前は見張りが「別の出口に変わったか」を見るときの手がかりの1つで、名前なし同士・名前なしと
+/// 名前ありは名前を比べない（`OutputInfo::is_same_output_as`）。
 fn output_info_from_parts(
     device_name: Result<String, impl std::fmt::Display>,
     sample_rate: u32,
     channels: usize,
-) -> Result<OutputInfo, String> {
-    let device_name = device_name.map_err(|e| format!("出力デバイスの名前を取得できませんでした: {e}"))?;
-    Ok(OutputInfo { device_name, sample_rate, channels })
+) -> OutputInfo {
+    OutputInfo { device_name: device_name.ok(), sample_rate, channels }
 }
 
-fn output_info_of(
-    device: &cpal::Device,
-    config: &cpal::SupportedStreamConfig,
-) -> Result<OutputInfo, String> {
+fn output_info_of(device: &cpal::Device, config: &cpal::SupportedStreamConfig) -> OutputInfo {
     output_info_from_parts(device.name(), config.sample_rate().0, config.channels() as usize)
 }
 
@@ -362,7 +359,7 @@ impl OutputBackend for CpalBackend {
 
     fn probe(&mut self) -> Result<OutputInfo, String> {
         let (device, config) = self.default_output()?;
-        output_info_of(&device, &config)
+        Ok(output_info_of(&device, &config))
     }
 
     fn open(
@@ -371,7 +368,7 @@ impl OutputBackend for CpalBackend {
         health: Arc<StreamHealth>,
     ) -> Result<(OutputInfo, cpal::Stream), String> {
         let (device, supported_config) = self.default_output()?;
-        let info = output_info_of(&device, &supported_config)?;
+        let info = output_info_of(&device, &supported_config);
         let sample_format = supported_config.sample_format();
         let channels = info.channels;
         let sample_rate = info.sample_rate;
@@ -475,11 +472,13 @@ mod tests {
     }
 
     #[test]
-    fn output_info_requires_the_device_name() {
-        let ok = output_info_from_parts(Ok::<_, String>("内蔵スピーカー".to_string()), 48_000, 2).unwrap();
-        assert_eq!(ok, OutputInfo { device_name: "内蔵スピーカー".to_string(), sample_rate: 48_000, channels: 2 });
-        // 名前が取れないときは Err。代わりの名前で別の出力先に見せない。
-        assert!(output_info_from_parts(Err("取れない".to_string()), 48_000, 2).is_err());
+    fn output_info_keeps_the_name_when_available_and_has_none_when_not() {
+        let named = output_info_from_parts(Ok::<_, String>("内蔵スピーカー".to_string()), 48_000, 2);
+        assert_eq!(named.device_name.as_deref(), Some("内蔵スピーカー"));
+        // 名前が取れないときは名前なし。代わりの名前を作って別の出力先に見せない。
+        let nameless = output_info_from_parts(Err("取れない".to_string()), 48_000, 2);
+        assert_eq!(nameless.device_name, None);
+        assert_eq!((nameless.sample_rate, nameless.channels), (48_000, 2));
     }
 
     #[test]

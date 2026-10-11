@@ -52,13 +52,27 @@ pub const FALLBACK_SAMPLE_RATE: u32 = 48_000;
 
 // ---- 出口の情報と、ストリームの健康状態 ----------------------------------------------------------
 
-/// 出力先の情報。見張りは、この3つのどれかが変わったら「別の出口」とみなす。
-/// 同じ名前の機器が2台つながっているときの区別はしない（名前しか取れない）。
+/// 出力先の情報。見張りは、この3つのどれかが変わったら「別の出口」とみなす（比べ方は
+/// [`OutputInfo::is_same_output_as`]）。同じ名前の機器が2台つながっているときの区別はしない（名前しか取れない）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputInfo {
-    pub device_name: String,
+    /// 機器名。OS が名前を返せないときは `None`（名前が取れなくても、その出口で鳴らす）。
+    pub device_name: Option<String>,
     pub sample_rate: u32,
     pub channels: usize,
+}
+
+impl OutputInfo {
+    /// 同じ出口とみなせるか。名前は、両方が取れているときだけ比べる。
+    /// 名前の取得は一瞬だけ失敗することがあり、それを「別の出力先に変わった」と見ると、
+    /// 動いている出口を誤って手放して作り直しを繰り返すため。レートとチャンネル数は常に比べる。
+    pub fn is_same_output_as(&self, other: &OutputInfo) -> bool {
+        let same_name = match (&self.device_name, &other.device_name) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        };
+        same_name && self.sample_rate == other.sample_rate && self.channels == other.channels
+    }
 }
 
 /// ストリーム1本ぶんの健康状態。音声のスレッドが書き、見張りが読む（原子的な値だけ。ロックなし）。
@@ -247,7 +261,7 @@ impl<B: OutputBackend> OutputSupervisor<B> {
                 lost = Some("callback_stalled");
             } else if let Ok(current) = self.backend.probe() {
                 // 既定の出力先が変わったか。調べられないとき（Err）は、動いている出口を手放さない。
-                if current != running.info {
+                if !current.is_same_output_as(&running.info) {
                     lost = Some("default_output_changed");
                 }
             }
@@ -277,7 +291,10 @@ impl<B: OutputBackend> OutputSupervisor<B> {
     /// 出口を作ってみる。成功すれば出力状態を「正常」に、失敗すれば「失敗」にして次の試行を決める。
     fn try_open(&mut self, now: Instant) {
         // 動いている出口があるまま新しいミキサーを作ると、待ち行列の読み手が2つになる（`lose_output` を参照）。
-        debug_assert!(self.running.is_none(), "動いている出口を残したまま作り直そうとした");
+        // 呼び出し側は出口が無いときだけ呼ぶが、本番ビルドでも読み手が2つにならないよう、ここでも防ぐ。
+        if self.running.is_some() {
+            return;
+        }
         let health = Arc::new(StreamHealth::new());
         let engine = &self.engine;
         let build_kit = &self.build_kit;
@@ -399,7 +416,11 @@ mod tests {
     }
 
     fn info(name: &str, rate: u32) -> OutputInfo {
-        OutputInfo { device_name: name.to_string(), sample_rate: rate, channels: 2 }
+        OutputInfo { device_name: Some(name.to_string()), sample_rate: rate, channels: 2 }
+    }
+
+    fn nameless_info(rate: u32) -> OutputInfo {
+        OutputInfo { device_name: None, sample_rate: rate, channels: 2 }
     }
 
     fn new_world(default_output: Result<OutputInfo, String>) -> SharedWorld {
@@ -573,7 +594,7 @@ mod tests {
         rig.advance(RETRY_FIRST_INTERVAL);
 
         assert_eq!(world.borrow().opened.len(), 2, "既定の出力先が変わったのに作り直していない");
-        assert_eq!(world.borrow().opened[1].device_name, "Bluetooth ヘッドホン");
+        assert_eq!(world.borrow().opened[1].device_name.as_deref(), Some("Bluetooth ヘッドホン"));
         assert_eq!(rig.synth_count(), 1, "同じレートなのにキットを合成し直した");
     }
 
@@ -644,6 +665,58 @@ mod tests {
             attempts_seen.windows(2).any(|w| w[1] > w[0]),
             "作り直しの間隔が広がっていない: {attempts_seen:?}"
         );
+    }
+
+    #[test]
+    fn an_output_whose_name_cannot_be_read_still_plays_and_is_not_rebuilt_over_and_over() {
+        let world = new_world(Ok(nameless_info(48_000)));
+        let mut rig = Rig::start(world.clone());
+
+        // 名前が取れない出口でも、開けて鳴る。
+        assert!(rig.supervisor.is_running(), "名前が取れないだけで開けない");
+        assert_eq!(rig.status(), OutputStatus::Ok { sample_rate: 48_000 });
+        rig.render(1);
+        assert!(rig.supervisor.engine().play("kick", 0, 1.0));
+        assert!(rig.render(2_000).iter().any(|s| s.abs() > 0.1));
+
+        // 見張りが毎回「別の出口」と誤判定して、作り直しを繰り返さない。
+        for _ in 0..10 {
+            rig.callback_once();
+            rig.advance(WATCH_INTERVAL);
+        }
+        assert_eq!(world.borrow().opened.len(), 1, "名前が取れない出口を作り直し続けた");
+    }
+
+    #[test]
+    fn a_momentary_name_failure_does_not_drop_a_named_output_but_a_rate_change_still_does() {
+        let world = new_world(Ok(info("内蔵スピーカー", 48_000)));
+        let mut rig = Rig::start(world.clone());
+
+        // 名前の取得だけが一瞬失敗した（レート・チャンネルは同じ）。手放さない。
+        world.borrow_mut().default_output = Ok(nameless_info(48_000));
+        rig.callback_once();
+        rig.advance(WATCH_INTERVAL);
+        assert_eq!(world.borrow().opened.len(), 1);
+        assert!(rig.supervisor.is_running());
+
+        // 名前が取れなくても、レートが変われば別の出口として作り直す。
+        world.borrow_mut().default_output = Ok(nameless_info(44_100));
+        rig.callback_once();
+        rig.advance(WATCH_INTERVAL);
+        rig.advance(RETRY_FIRST_INTERVAL);
+        assert_eq!(world.borrow().opened.len(), 2);
+        assert_eq!(world.borrow().opened[1].sample_rate, 44_100);
+    }
+
+    #[test]
+    fn try_open_does_nothing_while_an_output_is_running() {
+        let world = new_world(Ok(info("内蔵スピーカー", 48_000)));
+        let mut rig = Rig::start(world.clone());
+        let attempts = world.borrow().open_attempts;
+
+        rig.supervisor.try_open(rig.clock);
+        assert_eq!(world.borrow().open_attempts, attempts, "動いている出口があるのに作ろうとした");
+        assert_eq!(world.borrow().live_streams.get(), 1);
     }
 
     #[test]
