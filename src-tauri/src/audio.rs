@@ -282,7 +282,8 @@ pub fn spawn_output_stream() -> Arc<AudioEngine> {
         // スレッドを終わらせずに見張りを続ける。
         loop {
             std::thread::sleep(std::time::Duration::from_millis(SUPERVISOR_TICK_MS));
-            supervisor.tick(Instant::now());
+            // panic しても見張りを続ける（出力状態は「問題あり」になる）。
+            supervisor.tick_guarded(Instant::now());
         }
     });
 
@@ -338,12 +339,22 @@ impl CpalBackend {
     }
 }
 
-fn output_info_of(device: &cpal::Device, config: &cpal::SupportedStreamConfig) -> OutputInfo {
-    OutputInfo {
-        device_name: device.name().unwrap_or_else(|_| "(unknown)".to_string()),
-        sample_rate: config.sample_rate().0,
-        channels: config.channels() as usize,
-    }
+/// 出力先の情報を組み立てる。機器名が取れないときは `Err`（取れなかった名前を代わりの文字列で
+/// 埋めると、問い合わせの失敗が「別の出力先に変わった」と見えて、動いている出口を誤って手放すため）。
+fn output_info_from_parts(
+    device_name: Result<String, impl std::fmt::Display>,
+    sample_rate: u32,
+    channels: usize,
+) -> Result<OutputInfo, String> {
+    let device_name = device_name.map_err(|e| format!("出力デバイスの名前を取得できませんでした: {e}"))?;
+    Ok(OutputInfo { device_name, sample_rate, channels })
+}
+
+fn output_info_of(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+) -> Result<OutputInfo, String> {
+    output_info_from_parts(device.name(), config.sample_rate().0, config.channels() as usize)
 }
 
 impl OutputBackend for CpalBackend {
@@ -351,7 +362,7 @@ impl OutputBackend for CpalBackend {
 
     fn probe(&mut self) -> Result<OutputInfo, String> {
         let (device, config) = self.default_output()?;
-        Ok(output_info_of(&device, &config))
+        output_info_of(&device, &config)
     }
 
     fn open(
@@ -360,7 +371,7 @@ impl OutputBackend for CpalBackend {
         health: Arc<StreamHealth>,
     ) -> Result<(OutputInfo, cpal::Stream), String> {
         let (device, supported_config) = self.default_output()?;
-        let info = output_info_of(&device, &supported_config);
+        let info = output_info_of(&device, &supported_config)?;
         let sample_format = supported_config.sample_format();
         let channels = info.channels;
         let sample_rate = info.sample_rate;
@@ -461,6 +472,14 @@ mod tests {
 
     fn range(min: u32, max: u32) -> cpal::SupportedBufferSize {
         cpal::SupportedBufferSize::Range { min, max }
+    }
+
+    #[test]
+    fn output_info_requires_the_device_name() {
+        let ok = output_info_from_parts(Ok::<_, String>("内蔵スピーカー".to_string()), 48_000, 2).unwrap();
+        assert_eq!(ok, OutputInfo { device_name: "内蔵スピーカー".to_string(), sample_rate: 48_000, channels: 2 });
+        // 名前が取れないときは Err。代わりの名前で別の出力先に見せない。
+        assert!(output_info_from_parts(Err("取れない".to_string()), 48_000, 2).is_err());
     }
 
     #[test]

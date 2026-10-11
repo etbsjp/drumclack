@@ -17,6 +17,7 @@
 //! 実機の音声デバイスが無くても「失敗→再試行→成功」などを確かめられるようにするため）。
 //! 打鍵の内容は一切扱わない。
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -207,6 +208,21 @@ impl<B: OutputBackend> OutputSupervisor<B> {
         }
     }
 
+    /// [`OutputSupervisor::tick`] を、panic しても見張りが止まらないように包んで呼ぶ（専用スレッドが呼ぶ）。
+    /// panic したら、出口を手放して出力状態を「問題あり」にし、次の再試行の時刻を決めて続ける
+    /// （panic のまま見張りが死ぬと、状態が「正常」のまま作り直されず無音になるため）。
+    /// 戻り値は panic したか。
+    pub fn tick_guarded(&mut self, now: Instant) -> bool {
+        let panicked = catch_unwind(AssertUnwindSafe(|| self.tick(now))).is_err();
+        if panicked {
+            eprintln!("[drumclack] 音声出力の見張りで内部エラーが起きました（出口を作り直して続けます）");
+            self.running = None;
+            self.engine.set_output_status(OutputStatus::Err("音声出力の見張りで内部エラーが起きました。".to_string()));
+            self.next_attempt_at = now + self.backoff.take();
+        }
+        panicked
+    }
+
     /// 動いている出口を見て、失っていれば手放す。
     fn watch(&mut self, now: Instant) {
         let Some(running) = self.running.as_mut() else {
@@ -246,16 +262,22 @@ impl<B: OutputBackend> OutputSupervisor<B> {
 
     /// 動いていた出口を手放し、次の試行の時刻を決める。
     fn lose_output(&mut self, now: Instant) {
+        // 古いストリームはここで落とし切る。新しいミキサーを作る（`try_open`）より前に、
+        // 古いコールバックが止まっていること。待ち行列の読み手（`RequestQueue::pop`）は
+        // 常に1つのコールバックだけ、という前提がこの順序に依っている。
         if let Some(running) = self.running.take() {
             if now.duration_since(running.started_at) >= HEALTHY_RESET_AFTER {
                 self.backoff.reset();
             }
         }
+        debug_assert!(self.running.is_none());
         self.next_attempt_at = now + self.backoff.take();
     }
 
     /// 出口を作ってみる。成功すれば出力状態を「正常」に、失敗すれば「失敗」にして次の試行を決める。
     fn try_open(&mut self, now: Instant) {
+        // 動いている出口があるまま新しいミキサーを作ると、待ち行列の読み手が2つになる（`lose_output` を参照）。
+        debug_assert!(self.running.is_none(), "動いている出口を残したまま作り直そうとした");
         let health = Arc::new(StreamHealth::new());
         let engine = &self.engine;
         let build_kit = &self.build_kit;
@@ -326,6 +348,8 @@ mod tests {
         health: Option<Arc<StreamHealth>>,
         /// 生きているストリームの数（落とされたら減る）。
         live_streams: Rc<Cell<usize>>,
+        /// 真の間、既定の出力先の問い合わせで panic する。
+        panic_on_probe: bool,
     }
 
     type SharedWorld = Rc<RefCell<World>>;
@@ -348,6 +372,9 @@ mod tests {
         type Stream = FakeStream;
 
         fn probe(&mut self) -> Result<OutputInfo, String> {
+            if self.world.borrow().panic_on_probe {
+                panic!("テスト用の panic");
+            }
             self.world.borrow().default_output.clone()
         }
 
@@ -384,6 +411,7 @@ mod tests {
             mixer: None,
             health: None,
             live_streams: Rc::new(Cell::new(0)),
+            panic_on_probe: false,
         }))
     }
 
@@ -616,6 +644,27 @@ mod tests {
             attempts_seen.windows(2).any(|w| w[1] > w[0]),
             "作り直しの間隔が広がっていない: {attempts_seen:?}"
         );
+    }
+
+    #[test]
+    fn a_panic_in_the_watch_marks_the_output_as_a_problem_and_the_watch_keeps_going() {
+        let world = new_world(Ok(info("内蔵スピーカー", 48_000)));
+        let mut rig = Rig::start(world.clone());
+        rig.callback_once();
+
+        // 見張りの途中で panic する。状態が「正常」のまま残ってはいけない。
+        world.borrow_mut().panic_on_probe = true;
+        rig.clock += WATCH_INTERVAL;
+        assert!(rig.supervisor.tick_guarded(rig.clock), "panic を捕まえていない");
+        assert!(matches!(rig.status(), OutputStatus::Err(_)), "panic したのに「問題なし」のまま");
+        assert!(!rig.supervisor.is_running());
+
+        // 原因がなくなれば、見張りは続いていて、作り直して正常に戻る。
+        world.borrow_mut().panic_on_probe = false;
+        rig.clock += RETRY_MAX_INTERVAL;
+        assert!(!rig.supervisor.tick_guarded(rig.clock));
+        assert!(rig.supervisor.is_running());
+        assert_eq!(rig.status(), OutputStatus::Ok { sample_rate: 48_000 });
     }
 
     // ---- サンプルレートが変わる出力先 ----
