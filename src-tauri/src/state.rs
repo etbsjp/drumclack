@@ -10,22 +10,18 @@ use crate::assignment::LiveAssignments;
 use crate::audio::AudioEngine;
 use crate::permission;
 
-/// 音声デバイス初期化の結果。
-#[derive(Debug, Clone)]
-pub enum AudioInitStatus {
-    /// 初期化成功。サンプルレートとバッファ設定を保持し、画面表示にも使う。
-    Ok { sample_rate: u32 },
-    /// 初期化失敗。原因の要約文言を保持する。
-    Err(String),
-}
+/// 音声デバイス（音の出口）の状態。起動時の結果だけでなく、出口の作り直しの成否も表す
+/// （`audio.rs` の `OutputStatus`。成功ならいま使っているサンプルレート、失敗なら原因の要約文言）。
+pub use crate::audio::OutputStatus as AudioInitStatus;
 
 /// アプリ全体で共有する状態。
 pub struct AppState {
     /// 起動時に一度だけ判定する、Windows/macOS 等のプラットフォーム種別。
     pub platform: &'static str,
-    /// 音声デバイス初期化の成否。起動後に一度だけセットされ、以後は不変。
-    pub audio_init: AudioInitStatus,
-    /// 音声合成・再生エンジン（初期化に成功した場合のみ Some）。
+    /// 音声エンジンが無いときの音声デバイスの状態。エンジンがあるときは、エンジンが持つ
+    /// 最新の状態（出口の作り直しの結果）を読む（[`AppState::audio_status`]）。
+    audio_init: AudioInitStatus,
+    /// 音声合成・再生エンジン。出力先が使えなくても作る（出口は見張りが作り直す）。
     /// キー入力スレッドと状態表示コマンドの双方から参照するため `Arc` で共有する。
     pub audio_engine: Option<Arc<AudioEngine>>,
     /// `DRUMCLACK_TEST_DELAY_MS` の値（テスト用の遅延発音、測定の陽性対照）。
@@ -80,9 +76,17 @@ impl AppState {
         self.platform != "macos" || permission::check_input_monitoring() == "granted"
     }
 
-    /// 音声デバイスの初期化に成功しているか。
+    /// 音声デバイスの今の状態。出口を失って作り直している間は失敗、直れば自動で成功に戻る。
+    pub fn audio_status(&self) -> AudioInitStatus {
+        match &self.audio_engine {
+            Some(engine) => engine.output_status(),
+            None => self.audio_init.clone(),
+        }
+    }
+
+    /// 音声デバイスが使えているか（起動時の初期化に成功し、いまも出口が生きている）。
     pub fn audio_ok(&self) -> bool {
-        matches!(self.audio_init, AudioInitStatus::Ok { .. })
+        matches!(self.audio_status(), AudioInitStatus::Ok { .. })
     }
 
     /// 直近に実際に鳴り始めた時刻（UNIX epoch ミリ秒）。まだ一度も鳴っていなければ None。
@@ -128,7 +132,7 @@ pub fn build_snapshot(state: &AppState) -> StatusSnapshot {
         None
     };
 
-    let audio = match &state.audio_init {
+    let audio = match &state.audio_status() {
         AudioInitStatus::Ok { sample_rate } => AudioSnapshot {
             ok: true,
             message: format!("初期化済み（サンプルレート {sample_rate} Hz）"),

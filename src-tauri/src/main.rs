@@ -19,6 +19,7 @@ mod key_position;
 mod key_tables;
 mod key_tracker;
 mod kick;
+mod output_recovery;
 mod permission;
 mod play_mode;
 mod resident;
@@ -112,22 +113,19 @@ fn main() {
             None::<Vec<&str>>,
         ))
         .setup(|app| {
-            // 音声デバイスの初期化は起動時に一度だけ行う。失敗しても
-            // アプリは起動を続け、画面に失敗理由を表示する（キー監視は続行する
-            // ＝ 権限や音声デバイスの状態はそれぞれ独立して表示するため）。
+            // 音声デバイスの初期化は起動時に行い、失敗してもアプリは起動を続ける（画面に失敗理由を
+            // 表示する。キー監視は続行する＝ 権限や音声デバイスの状態はそれぞれ独立して表示するため）。
+            // 出口（出力ストリーム）の見張りと作り直しは専用スレッドが続ける。失敗した状態から
+            // でも、出力先が使えるようになれば自動で鳴らせる状態に戻り、「問題あり」も消える。
             // cpal::Stream は Send/Sync ではないため、専用スレッドに閉じ込めて
             // 再生を維持する（詳細は audio::spawn_output_stream のコメント参照）。
-            let (audio_init, audio_engine) = match audio::spawn_output_stream() {
-                Ok(engine) => {
-                    (AudioInitStatus::Ok { sample_rate: engine.sample_rate() }, Some(engine))
-                }
-                Err(reason) => {
-                    eprintln!("[drumclack] 音声デバイス初期化に失敗しました: {reason}");
-                    (AudioInitStatus::Err(reason), None)
-                }
-            };
+            let audio_engine = audio::spawn_output_stream();
+            let audio_init = audio_engine.output_status();
+            if let AudioInitStatus::Err(reason) = &audio_init {
+                eprintln!("[drumclack] 音声デバイス初期化に失敗しました（再試行を続けます）: {reason}");
+            }
 
-            let app_state = Arc::new(AppState::new(audio_init, audio_engine.clone()));
+            let app_state = Arc::new(AppState::new(audio_init, Some(audio_engine.clone())));
 
             // 設定は OS 標準の設定フォルダ（jp.etbs.drumclack）から読む。フォルダが分からないときは
             // 既定で動き、保存だけ行わない。音量・割り当て・オン／オフは読み込み時に鳴らす側へ反映される。
@@ -142,10 +140,9 @@ fn main() {
             ));
             app.manage(store.clone());
 
-            // キー入力の監視は、鳴らす対象（音声エンジン）が用意できた場合のみ開始する。
-            if let Some(engine) = audio_engine {
-                keyboard::spawn_listener(engine, app_state.clone());
-            }
+            // キー入力の監視を始める。音声エンジンは出口が失敗していても用意してあるので、
+            // 出口が後から直れば、そのまま鳴る。
+            keyboard::spawn_listener(audio_engine, app_state.clone());
 
             app.manage(app_state.clone());
             // 演奏用の割り当てで鳴らした音の名前を、メインの窓へ送る出口を付ける。
