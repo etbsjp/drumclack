@@ -37,16 +37,35 @@ pub fn icon_state(enabled: bool, input_permission_ok: bool, audio_ok: bool) -> I
     }
 }
 
-/// 起動時に窓を出すか。出すのは、初めて音が鳴るまで／入力監視が未許可／音声デバイスの初期化に失敗／
+/// 起動時に窓を出す条件の名前（ログに出す）。名前だけで、打鍵の内容は含まない。
+pub const REASON_FIRST_SOUND_NOT_DONE: &str = "first_sound_not_done";
+pub const REASON_INPUT_PERMISSION_MISSING: &str = "input_permission_missing";
+pub const REASON_AUDIO_INIT_FAILED: &str = "audio_init_failed";
+pub const REASON_RESTARTED_FROM_WINDOW: &str = "restarted_from_window";
+
+/// 起動時に窓を出す条件のうち、当たっているものの名前。空なら窓は出さずに常駐だけする。
+/// 出すのは、初めて音が鳴るまで／入力監視が未許可／音声デバイスの初期化に失敗／
 /// 窓のボタンから起動し直された（`restarted_from_window`）、のどれか。
-/// どれにも当たらなければ、窓は出さずに常駐だけする。
-pub fn show_window_at_launch(
+pub fn launch_window_reasons(
     first_sound_done: bool,
     input_permission_ok: bool,
     audio_ok: bool,
     restarted_from_window: bool,
-) -> bool {
-    !first_sound_done || !input_permission_ok || !audio_ok || restarted_from_window
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    if !first_sound_done {
+        reasons.push(REASON_FIRST_SOUND_NOT_DONE);
+    }
+    if !input_permission_ok {
+        reasons.push(REASON_INPUT_PERMISSION_MISSING);
+    }
+    if !audio_ok {
+        reasons.push(REASON_AUDIO_INIT_FAILED);
+    }
+    if restarted_from_window {
+        reasons.push(REASON_RESTARTED_FROM_WINDOW);
+    }
+    reasons
 }
 
 // ============================================================================
@@ -72,7 +91,8 @@ pub fn take_show_window_mark(config_dir: Option<&Path>) -> bool {
 }
 
 /// 起動時に窓を出すかを決める。印は、ほかの条件に当たっていても必ず消す（読んで消す順序を守るため、
-/// 先に印を取り出してから判断に渡す）。
+/// 先に印を取り出してから判断に渡す）。窓を出すときは、どの条件で出したかをログに1行出す
+/// （窓が出た原因を後から追えるようにするため。条件の名前だけで、キーの位置や時刻は出さない）。
 pub fn decide_window_at_launch(
     config_dir: Option<&Path>,
     first_sound_done: bool,
@@ -80,7 +100,11 @@ pub fn decide_window_at_launch(
     audio_ok: bool,
 ) -> bool {
     let restarted_from_window = take_show_window_mark(config_dir);
-    show_window_at_launch(first_sound_done, input_permission_ok, audio_ok, restarted_from_window)
+    let reasons = launch_window_reasons(first_sound_done, input_permission_ok, audio_ok, restarted_from_window);
+    if !reasons.is_empty() {
+        println!("[drumclack] 起動時に設定の窓を出しました。条件: {}", reasons.join(","));
+    }
+    !reasons.is_empty()
 }
 
 // ---- アイコンの絵 ------------------------------------------------------------------------------
@@ -509,11 +533,31 @@ mod tests {
 
     #[test]
     fn window_is_shown_at_launch_only_in_the_four_agreed_cases() {
-        assert!(!show_window_at_launch(true, true, true, false), "全部そろっていれば窓は出さない");
-        assert!(show_window_at_launch(false, true, true, false), "初めて音が鳴るまで");
-        assert!(show_window_at_launch(true, false, true, false), "入力監視が未許可");
-        assert!(show_window_at_launch(true, true, false, false), "音声デバイスの初期化に失敗");
-        assert!(show_window_at_launch(true, true, true, true), "窓のボタンから起動し直したあと");
+        let shown = |first, permission, audio, restarted| !launch_window_reasons(first, permission, audio, restarted).is_empty();
+        assert!(!shown(true, true, true, false), "全部そろっていれば窓は出さない");
+        assert!(shown(false, true, true, false), "初めて音が鳴るまで");
+        assert!(shown(true, false, true, false), "入力監視が未許可");
+        assert!(shown(true, true, false, false), "音声デバイスの初期化に失敗");
+        assert!(shown(true, true, true, true), "窓のボタンから起動し直したあと");
+    }
+
+    #[test]
+    fn launch_window_reasons_name_exactly_the_conditions_that_apply() {
+        assert!(launch_window_reasons(true, true, true, false).is_empty());
+        assert_eq!(launch_window_reasons(false, true, true, false), vec![REASON_FIRST_SOUND_NOT_DONE]);
+        assert_eq!(launch_window_reasons(true, false, true, false), vec![REASON_INPUT_PERMISSION_MISSING]);
+        assert_eq!(launch_window_reasons(true, true, false, false), vec![REASON_AUDIO_INIT_FAILED]);
+        assert_eq!(launch_window_reasons(true, true, true, true), vec![REASON_RESTARTED_FROM_WINDOW]);
+        // 複数に当たるときは、すべての名前を出す。
+        assert_eq!(
+            launch_window_reasons(false, false, false, true),
+            vec![
+                REASON_FIRST_SOUND_NOT_DONE,
+                REASON_INPUT_PERMISSION_MISSING,
+                REASON_AUDIO_INIT_FAILED,
+                REASON_RESTARTED_FROM_WINDOW,
+            ]
+        );
     }
 
     #[test]

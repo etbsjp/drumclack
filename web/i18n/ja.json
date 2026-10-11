@@ -24,7 +24,7 @@
   "status.firstSound.action": "次の操作: 何かキーを押してください。ドラムが鳴れば準備完了です。",
   "status.firstSound.done": "鳴りました。準備ができました。",
   "status.audio.failed": "音声の出力先を開けませんでした。",
-  "status.audio.action": "次の操作: 他のアプリで使用中でないか確認し、drumclack を起動し直してください。",
+  "status.audio.action": "次の操作: スピーカーやイヤホンがつながっているか、他のアプリで使用中でないかを確認してください。使える状態に戻れば自動で直ります。しばらく待っても直らないときは、drumclack を起動し直してください。",
   "status.audio.detail": "エラー内容: {message}",
   "status.fetch.failed": "状態を取得できませんでした。",
   "status.fetch.action": "次の操作: drumclack を起動し直してください。",
