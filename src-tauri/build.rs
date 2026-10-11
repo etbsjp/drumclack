@@ -8,6 +8,7 @@ fn main() {
         "preview_sound",
         "open_input_monitoring_settings",
         "restart_app",
+        "set_play_view_open",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(app_commands))
         .expect("tauri-build に失敗しました");

@@ -29,7 +29,7 @@ function usedKeys() {
     for (const pair of match[1].split(";")) keys.add(pair.split(":")[1].trim());
   }
   // JS 側は、キーを文字列リテラルで書く（組み立てない）。`"status.ok"` のような形の文字列をすべて拾う。
-  for (const file of ["main.js", "assign.js"]) {
+  for (const file of ["main.js", "assign.js", "play.js"]) {
     for (const match of readWeb(file).matchAll(/"([a-z]+(?:\.[A-Za-z]+)+)"/g)) keys.add(match[1]);
   }
   return [...keys];
@@ -75,7 +75,7 @@ test("HTML と main.js に日本語の文言を直書きしていない", () => 
       .join("\n");
 
   // layouts.js は、キートップの刻印（実物のキーボードに印字された文字）なので対象にしない。
-  for (const file of ["index.html", "main.js", "i18n.js", "assign.js"]) {
+  for (const file of ["index.html", "main.js", "i18n.js", "assign.js", "play.js"]) {
     const found = withoutComments(readWeb(file)).match(/[぀-ヿ一-鿿]+/g);
     expect(found, file).toBeNull();
   }

@@ -634,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn screen_can_call_only_the_six_listed_commands() {
+    fn screen_can_call_only_the_seven_listed_commands_and_only_listen_to_events() {
         // 画面から呼べる命令の一覧（権限）を、増減したらここが落ちるようにする。
         let capability: Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         let mut permissions: Vec<&str> =
@@ -648,14 +648,16 @@ mod tests {
                 "allow-open-input-monitoring-settings",
                 "allow-preview-sound",
                 "allow-restart-app",
-                "allow-update-settings"
+                "allow-set-play-view-open",
+                "allow-update-settings",
+                "core:event:allow-listen"
             ]
         );
 
         // build.rs の命令の一覧（空白・改行を除いて比べる）。
         let build_script: String =
             include_str!("../build.rs").chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(build_script.contains(r#".commands(&["get_status","get_settings","update_settings","preview_sound","open_input_monitoring_settings","restart_app",])"#));
+        assert!(build_script.contains(r#".commands(&["get_status","get_settings","update_settings","preview_sound","open_input_monitoring_settings","restart_app","set_play_view_open",])"#));
     }
 
     #[test]

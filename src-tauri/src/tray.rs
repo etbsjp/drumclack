@@ -82,6 +82,10 @@ pub fn hide_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         let _ = window.hide();
     }
+    // 隠した窓は最前面ではない（フォーカスの知らせを待たずに、演奏用の割り当てを止める）。
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        state.assignments.play_mode.set_window_focused(false);
+    }
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 }

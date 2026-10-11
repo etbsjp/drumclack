@@ -59,8 +59,12 @@ test.describe("窓の骨格", () => {
 
     await page.keyboard.press("End");
     await expect(id(page, "panel-play")).toBeVisible();
-    await page.keyboard.press("ArrowRight");
+    // 演奏の区画ではキーを画面で使わせない（play.spec.js）ので、ここから先は押して戻る。
+    await id(page, "tab-settings").click();
     await expect(id(page, "panel-settings")).toBeVisible();
+    await id(page, "tab-settings").focus();
+    await page.keyboard.press("ArrowLeft");
+    await expect(id(page, "panel-play")).toBeVisible();
   });
 
   test("最小の窓（900×600）で横スクロールが出ない", async ({ page }) => {
@@ -841,7 +845,7 @@ test.describe("配色のコントラスト", () => {
 
 test.describe("橋渡しとビルド工程", () => {
   test("画面のスクリプトは __TAURI__ に直接触らない（橋渡しを通す）", async () => {
-    for (const file of ["main.js", "i18n.js"]) {
+    for (const file of ["main.js", "i18n.js", "assign.js", "play.js"]) {
       expect(readWeb(file), file).not.toMatch(/__TAURI__/);
     }
     expect(readWeb("bridge.js")).toMatch(/__TAURI__/);

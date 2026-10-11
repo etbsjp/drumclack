@@ -456,7 +456,7 @@ mod tests {
     // ---- 画面に権限を出さない・自動で登録しない ----
 
     #[test]
-    fn the_screen_capability_lists_only_the_six_commands_and_no_plugin_permission() {
+    fn the_screen_capability_lists_only_the_seven_commands_and_event_listening_and_no_plugin_permission() {
         const CAPABILITY: &str = include_str!("../capabilities/default.json");
         let value: serde_json::Value = serde_json::from_str(CAPABILITY).unwrap();
         let mut permissions: Vec<&str> =
@@ -470,9 +470,12 @@ mod tests {
                 "allow-open-input-monitoring-settings",
                 "allow-preview-sound",
                 "allow-restart-app",
-                "allow-update-settings"
+                "allow-set-play-view-open",
+                "allow-update-settings",
+                "core:event:allow-listen"
             ]
         );
+        assert!(!CAPABILITY.contains("allow-emit"), "画面からイベントを送る権限は出さない（受け取りだけ）");
         assert!(!CAPABILITY.contains("autostart"), "ログイン時の起動の権限を画面に出していない");
         assert!(!CAPABILITY.contains("single-instance"));
     }

@@ -257,11 +257,6 @@ h1 {
   font-size: 0.85rem;
 }
 
-.placeholder {
-  margin: 0;
-  color: var(--muted);
-}
-
 /* ==========================================================================
    設定の区画
    ========================================================================== */
@@ -865,4 +860,142 @@ select {
   flex: 1;
   min-width: 0;
   color: var(--muted);
+}
+
+/* ==========================================================================
+   演奏の区画（状態の表示・パッド）
+   ========================================================================== */
+
+.play {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.play-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.play-mode {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.play-status[data-mode="play"] .play-mode {
+  color: var(--ok-fg);
+}
+
+.play-reason {
+  margin: 0;
+}
+
+.play-reason[hidden] {
+  display: none;
+}
+
+.play-off {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.play-off[hidden] {
+  display: none;
+}
+
+/* パッド
+   ========================================================================== */
+
+.pads {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pad {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 120px;
+  padding: 12px;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  background: var(--snd);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition:
+    transform 0.08s,
+    box-shadow 0.08s;
+}
+
+.pad:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.pad-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.pad-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.pad-key {
+  min-width: 1.8em;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.pad-more {
+  color: var(--fg);
+  font-size: 0.85rem;
+}
+
+/* 窓が背面のあいだは、彩度を落として枠を破線にする（理由は状態の表示に文で出す）。
+   opacity は使わない（文字のコントラストが 4.5:1 を割るため）。 */
+.pads[data-dimmed="true"] .pad {
+  border-style: dashed;
+  filter: saturate(0.3);
+}
+
+/* 光る表現。色の変化に加えて、枠と影の太さでも分かるようにする。 */
+.pad[data-lit="true"] {
+  border-color: var(--fg);
+  box-shadow: 0 0 0 4px var(--accent);
+  transform: scale(0.97);
+}
+
+/* 「動きを減らす」設定では、縮む動きと遷移を止める（枠と影の変化だけを即座に切り替える）。 */
+@media (prefers-reduced-motion: reduce) {
+  .pad {
+    transition: none;
+  }
+
+  .pad[data-lit="true"] {
+    transform: none;
+  }
 }
