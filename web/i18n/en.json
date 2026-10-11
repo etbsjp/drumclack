@@ -24,7 +24,7 @@
   "status.firstSound.action": "Next: press any key. If you hear a drum, you are ready.",
   "status.firstSound.done": "It played. You are ready.",
   "status.audio.failed": "Could not open the audio output.",
-  "status.audio.action": "Next step: check that no other app is using the audio device, then restart drumclack.",
+  "status.audio.action": "Next step: check that your speakers or headphones are connected and that no other app is using the audio device. It recovers automatically once the output is available.",
   "status.audio.detail": "Error: {message}",
   "status.fetch.failed": "Could not get the status.",
   "status.fetch.action": "Next step: restart drumclack.",

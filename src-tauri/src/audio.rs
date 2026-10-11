@@ -3,14 +3,18 @@
 //! 起動時に無料キットの波形をメモリに合成し、cpal で直接デバイスへ再生する。
 //! 発音の要求はキー入力スレッドから固定長の待ち行列へ積み、ミキシングは cpal の
 //! オーディオコールバック（別スレッド）が行う。両者の間にロックはない。
+//!
+//! 出力ストリームの作り直し（機器の抜き差し・スリープ復帰・既定の出力先の変更）は
+//! `output_recovery.rs` が見張る。このファイルは、その見張りが使う cpal の部品を持つ。
 
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::drums::{build_free_kit, VariantPicker};
+use crate::output_recovery::{OutputBackend, OutputInfo, OutputSupervisor, StreamHealth, FALLBACK_SAMPLE_RATE};
 use crate::voices::{Kit, PlayRequest, RequestQueue, VoicePool, MAX_REQUEST_VOLUME, REQUEST_QUEUE_CAPACITY};
 
 /// 1音あたりの基本ゲイン。フルスケール(1.0)のまま合算すると、複数ボイスが
@@ -57,11 +61,16 @@ fn now_epoch_ms() -> u64 {
 
 /// キー監視側（書く）と音声コールバック（読む）が共有する窓口。
 ///
-/// 中身はキット（作成後は読むだけ）と、原子的な値・ロックなしの待ち行列だけで、
-/// `Mutex` は持たない。ボイスの管理（[`Mixer`]）は音声コールバックだけが持つ。
+/// 中身はキット（作成後は読むだけ）と、原子的な値・ロックなしの待ち行列だけ。
+/// 打鍵のスレッドと音声コールバックが触る経路に `Mutex` は無い（出力状態の `Mutex` は、
+/// 見張りのスレッドが書き、状態表示が読むだけ）。ボイスの管理（[`Mixer`]）は音声コールバックだけが持つ。
 /// cpal の `Stream` はここでは保持せず [`spawn_output_stream`] の専用スレッドが握る。
+///
+/// 出力ストリームを作り直しても、このエンジンは作り直さない（打鍵側が持つ参照をそのまま使うため）。
 pub struct AudioEngine {
-    kit: Kit,
+    /// 音の名前・変種の数を引くためのキット。波形は、出口ごとの [`Mixer`] が持つキットを使う
+    /// （出力先のサンプルレートが変わると、そのレートで合成し直したキットになるため）。
+    kit: Arc<Kit>,
     variant_picker: VariantPicker,
     requests: RequestQueue,
     active_voices: AtomicUsize,
@@ -69,11 +78,26 @@ pub struct AudioEngine {
     last_accepted_play_ms: AtomicU64,
     /// 全体音量（`f32` のビット列）。
     master_volume_bits: AtomicU32,
-    sample_rate: u32,
+    /// 音の出口の状態。見張りが書き、トレイと画面の状態表示が読む。
+    output_status: Mutex<OutputStatus>,
+}
+
+/// 音の出口（出力ストリーム）の状態。「問題あり」の表示はこれを読む。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputStatus {
+    /// 鳴らせる状態。いま使っている出力先のサンプルレートを持つ。
+    Ok { sample_rate: u32 },
+    /// 鳴らせない状態。原因の要約文言（画面にそのまま出す）。
+    Err(String),
 }
 
 impl AudioEngine {
     pub fn new(kit: Kit, sample_rate: u32) -> Self {
+        Self::with_shared_kit(Arc::new(kit), sample_rate)
+    }
+
+    /// 出口づくりと共有するキットでエンジンを作る。`sample_rate` はそのキットを合成したレート。
+    pub fn with_shared_kit(kit: Arc<Kit>, sample_rate: u32) -> Self {
         Self {
             variant_picker: VariantPicker::new(kit.sound_count()),
             kit,
@@ -81,12 +105,18 @@ impl AudioEngine {
             active_voices: AtomicUsize::new(0),
             last_accepted_play_ms: AtomicU64::new(0),
             master_volume_bits: AtomicU32::new(1.0_f32.to_bits()),
-            sample_rate,
+            output_status: Mutex::new(OutputStatus::Ok { sample_rate }),
         }
     }
 
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
+    /// 音の出口の状態。
+    pub fn output_status(&self) -> OutputStatus {
+        self.output_status.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// 音の出口の状態を更新する（見張りが呼ぶ）。
+    pub(crate) fn set_output_status(&self, status: OutputStatus) {
+        *self.output_status.lock().unwrap_or_else(|p| p.into_inner()) = status;
     }
 
     /// `鳴らす(音, 変種, 音量)`。要求を待ち行列に積むだけで、ロックは取らない。
@@ -155,14 +185,37 @@ impl AudioEngine {
 /// コールバックの中でロック・確保・解放をしない。
 pub struct Mixer {
     engine: Arc<AudioEngine>,
+    /// 鳴らす波形。出力先のサンプルレートで合成したキット。
+    kit: Arc<Kit>,
     pool: VoicePool,
     fade_samples: u32,
+    /// 最初のコールバックで、溜まっていた発音の要求を鳴らさずに捨てる。
+    /// 出口を失っている間に溜まった打鍵が、作り直した瞬間にまとめて鳴るのを防ぐ。
+    discard_backlog: bool,
 }
 
 impl Mixer {
+    /// エンジンのキットで鳴らす（エンジンを作ったときのサンプルレートの出口向け）。
+    // 製品では `for_output` を使う。テストが、見張りを通さずにミキサーだけを作るのに使う。
+    #[cfg(test)]
     pub fn new(engine: Arc<AudioEngine>) -> Self {
-        let fade_samples = fade_samples_for(engine.sample_rate, CHOKE_FADE_MS);
-        Self { engine, pool: VoicePool::new(), fade_samples }
+        let kit = engine.kit.clone();
+        // 作ったばかりのエンジンの出力状態は、キットを合成したレートを持っている。
+        let sample_rate = match engine.output_status() {
+            OutputStatus::Ok { sample_rate } => sample_rate,
+            OutputStatus::Err(_) => FALLBACK_SAMPLE_RATE,
+        };
+        Self::build(engine, kit, sample_rate, false)
+    }
+
+    /// 出口のコールバックに渡すミキサー。`kit` は `sample_rate` で合成したキットを渡す。
+    pub fn for_output(engine: Arc<AudioEngine>, kit: Arc<Kit>, sample_rate: u32) -> Self {
+        Self::build(engine, kit, sample_rate, true)
+    }
+
+    fn build(engine: Arc<AudioEngine>, kit: Arc<Kit>, sample_rate: u32, discard_backlog: bool) -> Self {
+        let fade_samples = fade_samples_for(sample_rate, CHOKE_FADE_MS);
+        Self { engine, kit, pool: VoicePool::new(), fade_samples, discard_backlog }
     }
 
     /// 1サンプル分の出力を作る（合算＋レベル補正）。
@@ -172,7 +225,7 @@ impl Mixer {
     /// 変わる瞬間に既存の音の音量が跳ねて「プツッ」と鳴る（issue #6 原因B・C、
     /// PR #7 のレビューで実測）。全体音量は頭打ちの後に掛ける。
     fn next_sample(&mut self, master_volume: f32) -> f32 {
-        let mixed = self.pool.mix_next_sample(&self.engine.kit);
+        let mixed = self.pool.mix_next_sample(&self.kit);
         soft_clip(mixed * VOICE_GAIN) * master_volume
     }
 
@@ -180,8 +233,9 @@ impl Mixer {
     /// 溜まった発音の要求を取り込み、`data`（インターリーブ済みの出力バッファ）を
     /// チャンネル数ごとに分割して、フレーム単位でモノラルの音を書き込む。
     pub(crate) fn fill_output(&mut self, data: &mut [f32], channels: usize) {
+        let discard = std::mem::replace(&mut self.discard_backlog, false);
         while let Some(request) = self.engine.requests.pop() {
-            if self.pool.start(&self.engine.kit, request, self.fade_samples) {
+            if !discard && self.pool.start(&self.kit, request, self.fade_samples) {
                 self.engine.last_accepted_play_ms.store(now_epoch_ms(), Ordering::Relaxed);
             }
         }
@@ -197,47 +251,49 @@ impl Mixer {
     }
 }
 
-/// 起動時に一度だけ音声出力を初期化し、専用スレッドでストリームを再生し続ける。
+/// 見張りが出口の様子を見に行く間隔（スレッドが目覚める間隔）。調整するときはここを変える。
+/// 切り替わりに気づくまでの最大の遅れはこの値と `output_recovery::WATCH_INTERVAL` で決まる。
+const SUPERVISOR_TICK_MS: u64 = 250;
+
+/// 起動時に音声出力を初期化し、専用スレッドでストリームの再生と見張り・作り直しを続ける。
 ///
 /// `cpal::Stream` はプラットフォームによって `Send`/`Sync` を実装しない
 /// （例: macOS の CoreAudio バックエンド）ため、Tauri の管理状態
 /// （`Manager::manage`、複数スレッドから触られる前提）には乗せられない。
-/// そのため、ストリームの生成・保持をこの専用スレッド1本に閉じ込め、
+/// そのため、ストリームの生成・保持・作り直しをこの専用スレッド1本に閉じ込め、
 /// 他スレッドとやり取りする値は `Arc<AudioEngine>`（プレーンなデータのみで
 /// 構成され `Send + Sync`）に限定する。
 ///
-/// 戻り値は初期化結果。失敗した場合は理由を日本語の短い文言で返す
-/// （画面表示にそのまま使う）。スレッドはアプリのプロセスが終了するまで
-/// 生き続け、ストリームを保持し続ける（明示的な停止APIは持たない。
+/// 出力先が見つからない・開けないときも、エンジンは必ず返す（出力状態は
+/// [`OutputStatus::Err`]）。出力先が使えるようになれば、見張りが自動で鳴らせる状態にする。
+/// スレッドはアプリのプロセスが終了するまで生き続ける（明示的な停止APIは持たない。
 /// プロセス終了時にOSがまとめて破棄する）。
-pub fn spawn_output_stream() -> Result<Arc<AudioEngine>, String> {
-    let (tx, rx) = std::sync::mpsc::channel::<Result<Arc<AudioEngine>, String>>();
+pub fn spawn_output_stream() -> Arc<AudioEngine> {
+    let (tx, rx) = std::sync::mpsc::channel::<Arc<AudioEngine>>();
 
     std::thread::spawn(move || {
-        let result = build_stream();
-        let engine_for_reply = match &result {
-            Ok((engine, _stream)) => Ok(engine.clone()),
-            Err(e) => Err(e.clone()),
-        };
-
-        if tx.send(engine_for_reply).is_err() {
+        let mut supervisor =
+            OutputSupervisor::start(CpalBackend::new(), Box::new(build_free_kit), Instant::now());
+        if tx.send(supervisor.engine()).is_err() {
             // 受信側（setup）が既に諦めている場合は何もできることがない。
             return;
         }
-
-        match result {
-            // ストリームをこのスレッドのスタックに保持したまま眠り続けることで
-            // 再生を維持する（drop されると再生が止まるため）。
-            Ok((_engine, _stream)) => loop {
-                std::thread::park();
-            },
-            Err(_) => {
-                // 初期化失敗時はこのスレッドの役目は終わり。
-            }
+        // ストリームはこのスレッドの持ち物（supervisor の中）。落とすと再生が止まるため、
+        // スレッドを終わらせずに見張りを続ける。
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(SUPERVISOR_TICK_MS));
+            supervisor.tick(Instant::now());
         }
     });
 
-    rx.recv().map_err(|_| "音声出力スレッドの初期化応答を受信できませんでした。".to_string())?
+    rx.recv().unwrap_or_else(|_| {
+        // スレッドが応答できなかった（起動の途中で異常終了）。鳴らせない状態のエンジンを返す。
+        let engine = Arc::new(AudioEngine::new(build_free_kit(FALLBACK_SAMPLE_RATE), FALLBACK_SAMPLE_RATE));
+        engine.set_output_status(OutputStatus::Err(
+            "音声出力スレッドの初期化応答を受信できませんでした。".to_string(),
+        ));
+        engine
+    })
 }
 
 /// 実測フレーム数の待機設定（50ms × 40回 = 最大2秒）。
@@ -259,105 +315,144 @@ fn resolve_buffer_size(preferred: u32, supported: &cpal::SupportedBufferSize) ->
     }
 }
 
-/// デフォルトの出力デバイスを開き、[`AudioEngine`] と再生ストリームを構築する。
-/// 呼び出し元スレッドの外へ `cpal::Stream` を持ち出さない前提の内部関数。
-fn build_stream() -> Result<(Arc<AudioEngine>, cpal::Stream), String> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| "出力デバイスが見つかりませんでした。音声出力機器の接続を確認してください。".to_string())?;
+/// cpal を使う出力の部品。既定の出力デバイスを調べ、ストリームを作る。
+struct CpalBackend {
+    host: cpal::Host,
+}
 
-    let supported_config = device
-        .default_output_config()
-        .map_err(|e| format!("出力デバイスの設定取得に失敗しました: {e}"))?;
-
-    let sample_format = supported_config.sample_format();
-    let channels = supported_config.channels() as usize;
-    let sample_rate = supported_config.sample_rate().0;
-
-    // バッファサイズは低遅延寄りの値を希望するが、デバイスが対応する範囲に
-    // 収まらない場合は範囲内へ丸め、範囲が不明なら要求せず（デバイス既定値に
-    // 委ねる）、初期化失敗を避ける。
-    let requested_buffer_size =
-        resolve_buffer_size(PREFERRED_BUFFER_FRAMES, supported_config.buffer_size());
-
-    let mut config: cpal::StreamConfig = supported_config.into();
-    config.buffer_size = requested_buffer_size;
-
-    let engine = Arc::new(AudioEngine::new(build_free_kit(sample_rate), sample_rate));
-    let engine_cb = engine.clone();
-
-    // コールバックが実際に受け取ったバッファ長（フレーム数）。0は未観測。
-    // 要求値が効いているか（特にWindowsの共有モードではOS周期に丸められうる）を
-    // 確かめるためのもの。コールバック内ではアトミックな保存だけを行い、
-    // ロックやI/O（ログ出力）は一切しない。出力は別スレッドで行う。
-    let observed_frames = Arc::new(AtomicUsize::new(0));
-    let observed_frames_cb = observed_frames.clone();
-
-    let err_fn = |e| eprintln!("[drumclack] 音声出力エラー: {e}");
-
-    if sample_format != cpal::SampleFormat::F32 {
-        return Err(format!("未対応のサンプル形式です: {sample_format:?}"));
+impl CpalBackend {
+    fn new() -> Self {
+        Self { host: cpal::default_host() }
     }
 
-    // コールバックを持つストリームの構築。再試行で2回呼べるよう、毎回クローンを作る。
-    let build = |config: &cpal::StreamConfig| {
-        let mut mixer = Mixer::new(engine_cb.clone());
-        let observed_frames_cb = observed_frames_cb.clone();
-        device.build_output_stream(
-            config,
-            move |data: &mut [f32], _| {
-                // 初回のみ保存する（以降は読むだけで書かない）。
-                if observed_frames_cb.load(Ordering::Relaxed) == 0 {
-                    observed_frames_cb.store(data.len() / channels.max(1), Ordering::Relaxed);
-                }
-                mixer.fill_output(data, channels.max(1))
-            },
-            err_fn,
-            None,
-        )
-    };
-
-    // 固定サイズでの構築に失敗したら、デバイス既定のバッファサイズで1回だけ作り直す。
-    let stream = match build(&config) {
-        Ok(stream) => stream,
-        Err(e) if matches!(config.buffer_size, cpal::BufferSize::Fixed(_)) => {
-            eprintln!(
-                "[drumclack] バッファサイズ {:?} での出力ストリーム構築に失敗したため、既定サイズで再試行します: {e}",
-                config.buffer_size
-            );
-            config.buffer_size = cpal::BufferSize::Default;
-            build(&config).map_err(|e| format!("出力ストリームの構築に失敗しました: {e}"))?
-        }
-        Err(e) => return Err(format!("出力ストリームの構築に失敗しました: {e}")),
-    };
-
-    stream.play().map_err(|e| format!("音声出力の開始に失敗しました: {e}"))?;
-
-    // requested_buffer_size は再試行後に最終的に使った値。
-    println!(
-        "[drumclack] audio initialized: sample_rate={sample_rate}Hz channels={channels} preferred_buffer_frames={PREFERRED_BUFFER_FRAMES} requested_buffer_size={:?}",
-        config.buffer_size
-    );
-
-    // 実測フレーム数のログは、オーディオスレッドを塞がないよう別スレッドで
-    // コールバックの初回実行を待って1回だけ出力する。
-    std::thread::spawn(move || {
-        for _ in 0..OBSERVE_MAX_POLLS {
-            let frames = observed_frames.load(Ordering::Relaxed);
-            if frames != 0 {
-                println!(
-                    "[drumclack] audio callback observed (first callback): buffer_frames={frames} (preferred={PREFERRED_BUFFER_FRAMES})"
-                );
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(OBSERVE_POLL_INTERVAL_MS));
-        }
-        eprintln!("[drumclack] audio callback observed: 2秒以内にコールバックが呼ばれませんでした");
-    });
-
-    Ok((engine, stream))
+    /// 既定の出力デバイスと、その既定の設定。
+    fn default_output(&self) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
+        let device = self
+            .host
+            .default_output_device()
+            .ok_or_else(|| "出力デバイスが見つかりませんでした。音声出力機器の接続を確認してください。".to_string())?;
+        let supported_config = device
+            .default_output_config()
+            .map_err(|e| format!("出力デバイスの設定取得に失敗しました: {e}"))?;
+        Ok((device, supported_config))
+    }
 }
+
+fn output_info_of(device: &cpal::Device, config: &cpal::SupportedStreamConfig) -> OutputInfo {
+    OutputInfo {
+        device_name: device.name().unwrap_or_else(|_| "(unknown)".to_string()),
+        sample_rate: config.sample_rate().0,
+        channels: config.channels() as usize,
+    }
+}
+
+impl OutputBackend for CpalBackend {
+    type Stream = cpal::Stream;
+
+    fn probe(&mut self) -> Result<OutputInfo, String> {
+        let (device, config) = self.default_output()?;
+        Ok(output_info_of(&device, &config))
+    }
+
+    fn open(
+        &mut self,
+        make_mixer: &mut dyn FnMut(&OutputInfo) -> Mixer,
+        health: Arc<StreamHealth>,
+    ) -> Result<(OutputInfo, cpal::Stream), String> {
+        let (device, supported_config) = self.default_output()?;
+        let info = output_info_of(&device, &supported_config);
+        let sample_format = supported_config.sample_format();
+        let channels = info.channels;
+        let sample_rate = info.sample_rate;
+
+        // バッファサイズは低遅延寄りの値を希望するが、デバイスが対応する範囲に
+        // 収まらない場合は範囲内へ丸め、範囲が不明なら要求せず（デバイス既定値に
+        // 委ねる）、初期化失敗を避ける。
+        let requested_buffer_size =
+            resolve_buffer_size(PREFERRED_BUFFER_FRAMES, supported_config.buffer_size());
+
+        let mut config: cpal::StreamConfig = supported_config.into();
+        config.buffer_size = requested_buffer_size;
+
+        if sample_format != cpal::SampleFormat::F32 {
+            return Err(format!("未対応のサンプル形式です: {sample_format:?}"));
+        }
+
+        // コールバックが実際に受け取ったバッファ長（フレーム数）。0は未観測。
+        // 要求値が効いているか（特にWindowsの共有モードではOS周期に丸められうる）を
+        // 確かめるためのもの。コールバック内ではアトミックな保存だけを行い、
+        // ロックやI/O（ログ出力）は一切しない。出力は別スレッドで行う。
+        let observed_frames = Arc::new(AtomicUsize::new(0));
+
+        // ストリームのエラーは、ログに出して見張りへ知らせる（見張りが出口を作り直す）。
+        let err_health = health.clone();
+        let err_fn = move |e: cpal::StreamError| {
+            eprintln!("[drumclack] 音声出力エラー: {e}");
+            err_health.mark_failed();
+        };
+
+        // コールバックを持つストリームの構築。再試行で2回呼べるよう、毎回ミキサーを作る。
+        let mut build = |config: &cpal::StreamConfig| {
+            let mut mixer = make_mixer(&info);
+            let observed_frames_cb = observed_frames.clone();
+            let health_cb = health.clone();
+            device.build_output_stream(
+                config,
+                move |data: &mut [f32], _| {
+                    health_cb.note_callback();
+                    // 初回のみ保存する（以降は読むだけで書かない）。
+                    if observed_frames_cb.load(Ordering::Relaxed) == 0 {
+                        observed_frames_cb.store(data.len() / channels.max(1), Ordering::Relaxed);
+                    }
+                    mixer.fill_output(data, channels.max(1))
+                },
+                err_fn.clone(),
+                None,
+            )
+        };
+
+        // 固定サイズでの構築に失敗したら、デバイス既定のバッファサイズで1回だけ作り直す。
+        let stream = match build(&config) {
+            Ok(stream) => stream,
+            Err(e) if matches!(config.buffer_size, cpal::BufferSize::Fixed(_)) => {
+                eprintln!(
+                    "[drumclack] バッファサイズ {:?} での出力ストリーム構築に失敗したため、既定サイズで再試行します: {e}",
+                    config.buffer_size
+                );
+                config.buffer_size = cpal::BufferSize::Default;
+                build(&config).map_err(|e| format!("出力ストリームの構築に失敗しました: {e}"))?
+            }
+            Err(e) => return Err(format!("出力ストリームの構築に失敗しました: {e}")),
+        };
+
+        stream.play().map_err(|e| format!("音声出力の開始に失敗しました: {e}"))?;
+
+        // requested_buffer_size は再試行後に最終的に使った値。
+        println!(
+            "[drumclack] audio initialized: sample_rate={sample_rate}Hz channels={channels} preferred_buffer_frames={PREFERRED_BUFFER_FRAMES} requested_buffer_size={:?}",
+            config.buffer_size
+        );
+
+        // 実測フレーム数のログは、オーディオスレッドを塞がないよう別スレッドで
+        // コールバックの初回実行を待って1回だけ出力する。
+        std::thread::spawn(move || {
+            for _ in 0..OBSERVE_MAX_POLLS {
+                let frames = observed_frames.load(Ordering::Relaxed);
+                if frames != 0 {
+                    println!(
+                        "[drumclack] audio callback observed (first callback): buffer_frames={frames} (preferred={PREFERRED_BUFFER_FRAMES})"
+                    );
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(OBSERVE_POLL_INTERVAL_MS));
+            }
+            eprintln!("[drumclack] audio callback observed: 2秒以内にコールバックが呼ばれませんでした");
+        });
+
+        Ok((info, stream))
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
