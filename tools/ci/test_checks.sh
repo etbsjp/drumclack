@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 検査スクリプト（check_csp.sh / check_no_network_crates.sh）の自己テスト。
+# 検査スクリプト（check_csp.sh / check_no_network_crates.sh / check_signature_identifier.sh）の自己テスト。
 # 「正しいものは通り、悪いものは exit 1 で落ちる」ことを確かめる。
 # 検査が緩んで何でも通すようになっても、CI が気づけるようにするためのもの。
 
@@ -73,5 +73,14 @@ printf '[[package]]\nname = "tauri-plugin-updater"\nversion = "2.0.0"\n' >"$WORK
 expect_pass "依存: 通信系なし" bash "$HERE/check_no_network_crates.sh" "$WORK/clean/Cargo.toml" "$WORK/clean.lock"
 expect_fail "依存: reqwest を直接依存に持つ" bash "$HERE/check_no_network_crates.sh" "$WORK/dummy/Cargo.toml" "$WORK/clean.lock"
 expect_fail "依存: lock に自動更新プラグイン" bash "$HERE/check_no_network_crates.sh" "$WORK/clean/Cargo.toml" "$WORK/updater.lock"
+
+# --- 署名の識別子 ---
+printf 'Executable=/x/Drumclack.app/Contents/MacOS/drumclack\nIdentifier=jp.etbs.drumclack\nFormat=app bundle\n' >"$WORK/sig_ok.txt"
+printf 'Executable=/x/Drumclack.app/Contents/MacOS/drumclack\nIdentifier=drumclack-c7806a7add688b62\nFormat=app bundle\n' >"$WORK/sig_linker.txt"
+printf 'Executable=/x/Drumclack.app/Contents/MacOS/drumclack\nFormat=app bundle\n' >"$WORK/sig_none.txt"
+
+expect_pass "署名の識別子: バンドルの識別子と一致" bash "$HERE/check_signature_identifier.sh" "$WORK/sig_ok.txt" jp.etbs.drumclack
+expect_fail "署名の識別子: リンカーが付けた別の値" bash "$HERE/check_signature_identifier.sh" "$WORK/sig_linker.txt" jp.etbs.drumclack
+expect_fail "署名の識別子: Identifier= が無い" bash "$HERE/check_signature_identifier.sh" "$WORK/sig_none.txt" jp.etbs.drumclack
 
 exit "$failed"

@@ -3,9 +3,10 @@ name: Build and test
 permissions:
   contents: read
 
-# 常駐型タイピングドラムの成立性検証プロトタイプ。
-# macOS / Windows それぞれでビルドとテストを行い、未署名のビルド成果物を
-# アーティファクトとしてアップロードする。署名・インストーラー作成は行わない。
+# macOS / Windows それぞれでビルドとテストを行い、配布物（Mac は .app を収めた .dmg、Windows は .msi）を
+# アーティファクトとしてアップロードする。署名にお金はかけない（Mac は ad-hoc 署名、Windows は署名なし）。
+# ライセンス署名用の秘密鍵などの秘密の値は使わない（このワークフローは secrets を参照しない）。
+# 自動更新の仕組みは入れない（tools/ci/check_no_network_crates.sh が見張っている）。
 #
 # 公開リポジトリでActionsは無料のため、PRと main への push で常に実行する
 # （run-ci ラベルによるジョブ内 if 条件でのゲートは行わない）。
@@ -26,13 +27,13 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            artifact_name: drumclack
-            artifact_path: src-tauri/target/release/drumclack
             artifact_label: drumclack-macos
+            bundle_targets: app,dmg
+            bundle_path: src-tauri/target/release/bundle/dmg/*.dmg
           - os: windows-latest
-            artifact_name: drumclack.exe
-            artifact_path: src-tauri/target/release/drumclack.exe
             artifact_label: drumclack-windows
+            bundle_targets: msi
+            bundle_path: src-tauri/target/release/bundle/msi/*.msi
 
     runs-on: ${{ matrix.os }}
 
@@ -48,19 +49,95 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # 配布物を作る Tauri CLI を npx で動かすためだけに使う（アプリ本体のビルドには Node.js は不要）。
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       # 注意: Windows ランナーではキー入力フックの実際の動作確認はできない
       # （GUIセッション・権限の都合）。ここではビルドが通ることのみ確認する。
       - name: Run unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --release
 
-      - name: Build release binary
-        run: cargo build --manifest-path src-tauri/Cargo.toml --release
+      # Tauri CLI の版は Tauri 本体（2.11 系）に合わせて固定する。
+      # 署名は tauri.conf.json の bundle.macOS.signingIdentity（"-" = ad-hoc 署名）で行われる。
+      - name: Build distributable bundles
+        shell: bash
+        working-directory: src-tauri
+        run: npx --yes @tauri-apps/cli@2.11.5 build --bundles ${{ matrix.bundle_targets }}
 
-      - name: Upload unsigned build artifact
+      # ad-hoc 署名の識別子がバンドルの識別子（jp.etbs.drumclack）と一致していないと、
+      # macOS の許可の台帳（入力監視）で食い違って見える。.app と、.dmg の中の .app の両方を確かめる。
+      - name: Check macOS signature identifier and bundle info
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_id="$(jq -r .identifier src-tauri/tauri.conf.json)"
+          expected_version="$(jq -r .version src-tauri/tauri.conf.json)"
+          bundle_dir=src-tauri/target/release/bundle
+
+          check_app() {
+            local app="$1"
+            echo "--- $app"
+            codesign -dv --verbose=4 "$app" 2>"$RUNNER_TEMP/codesign.txt" || { cat "$RUNNER_TEMP/codesign.txt"; return 1; }
+            cat "$RUNNER_TEMP/codesign.txt"
+            bash tools/ci/check_signature_identifier.sh "$RUNNER_TEMP/codesign.txt" "$expected_id"
+            codesign --verify --strict --verbose=2 "$app"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "$expected_id"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$expected_version"
+          }
+
+          check_app "$bundle_dir/macos/Drumclack.app"
+
+          dmg="$(ls "$bundle_dir"/dmg/*.dmg | head -n 1)"
+          mount_point="$RUNNER_TEMP/dmg-mount"
+          mkdir -p "$mount_point"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount_point" "$dmg"
+          trap 'hdiutil detach "$mount_point" || true' EXIT
+          check_app "$mount_point/Drumclack.app"
+
+      # 配布物（.msi）から実際にインストールして、実行ファイルと版数を確かめる。
+      - name: Install the MSI and check the installed app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1
+          $expectedVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $log = Join-Path $env:RUNNER_TEMP 'msi-install.log'
+          $proc = Start-Process msiexec.exe -ArgumentList '/i', "`"$($msi.FullName)`"", '/qn', '/norestart', '/l*v', "`"$log`"" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            Get-Content $log -Tail 60
+            throw "msiexec failed: $($proc.ExitCode)"
+          }
+          $exe = Get-ChildItem -Path "$env:ProgramFiles\Drumclack", "$env:LOCALAPPDATA\Drumclack" -Filter drumclack.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'drumclack.exe was not installed' }
+          Write-Host "Installed: $($exe.FullName) ProductVersion=$($exe.VersionInfo.ProductVersion)"
+          if (-not $exe.VersionInfo.ProductVersion.StartsWith($expectedVersion)) {
+            throw "version mismatch: $($exe.VersionInfo.ProductVersion) vs $expectedVersion"
+          }
+          "DRUMCLACK_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # 起動して数秒生きていることだけを見る簡易確認。ランナーには音声デバイスも入力の許可も無く、
+      # 窓の出方も保証できないため、失敗してもビルドは落とさない（人の確認項目は PR 本文に書く）。
+      # 設定ファイルは、設定が保存されたとき（最初の発音を含む）に作られるため、ここでは確かめられない。
+      - name: Smoke launch the installed app (best effort)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath $env:DRUMCLACK_EXE -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) { throw "drumclack.exe exited with code $($p.ExitCode)" }
+          Write-Host 'drumclack.exe is still running after 10 seconds'
+          Stop-Process -Id $p.Id -Force
+
+      - name: Upload unsigned/ad-hoc signed distributable
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_label }}
-          path: ${{ matrix.artifact_path }}
+          path: ${{ matrix.bundle_path }}
           if-no-files-found: error
 
       # 無料キット8音×4変種=32個の WAV を書き出す（音声デバイス不要）。

@@ -15,6 +15,7 @@ const $ = (testId) => document.querySelector(`[data-testid="${testId}"]`);
 const els = {
   band: $("status-band"),
   issues: $("status-issues"),
+  residentHelp: $("resident-help"),
   detailPermissionRow: $("detail-permission-row"),
   detailPermission: $("detail-permission"),
   detailAudio: $("detail-audio"),
@@ -304,6 +305,8 @@ function setStateClass(el, state) {
 
 function renderDetails() {
   const status = view.status;
+  // アイコンが隠れる問題は Mac のノッチ由来のため、Mac のときだけ案内を出す。
+  els.residentHelp.hidden = status?.platform !== "macos";
   if (!status) {
     for (const el of [els.detailAudio, els.detailLastPlay, els.detailVoices]) {
       el.textContent = t("status.details.checking");
