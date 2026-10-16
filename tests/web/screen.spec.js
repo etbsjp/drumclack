@@ -716,7 +716,7 @@ test.describe("レビュー指摘への対応", () => {
 
     // タイムアウト（5秒）を待たずに、例外を拾ってすぐ出ること。
     await expect(id(page, "startup-error")).toBeVisible({ timeout: 2000 });
-    await expect(id(page, "startup-error")).toContainText("Restart drumclack");
+    await expect(id(page, "startup-error")).toContainText("Restart Drumclack");
     await expect(id(page, "startup-error")).toContainText("再起動してください");
   });
 
@@ -876,8 +876,8 @@ test.describe("常駐との接点", () => {
     await expect(id(page, "resident-note")).toHaveText(en["app.resident"]);
     expect(ja["app.resident"]).not.toBe(en["app.resident"]);
     // 短い脚注であること（長い説明にしない）。
-    expect(ja["app.resident"].length).toBeLessThanOrEqual(60);
-    expect(en["app.resident"].length).toBeLessThanOrEqual(130);
+    expect(ja["app.resident"].length).toBeLessThanOrEqual(90);
+    expect(en["app.resident"].length).toBeLessThanOrEqual(200);
   });
 
   test("常駐の文は、状態の帯より下に置く（見出しの直下で警告に先立たない）", async ({ page }) => {
@@ -888,6 +888,48 @@ test.describe("常駐との接点", () => {
       return Boolean(band.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING);
     });
     expect(noteIsAfterBand).toBe(true);
+  });
+
+  test("メニューバーのアイコンが見えないときの案内は、Mac のときだけ出し、自動では開かない（日英とも）", async ({ page }) => {
+    await openApp(page, { settings: { ...DEFAULT_SETTINGS, language: "ja" } });
+    const help = id(page, "resident-help");
+    await expect(help).toBeVisible();
+    await expect(help).not.toHaveAttribute("open", "");
+    await expect(help.locator("summary")).toHaveText(ja["resident.help.summary"]);
+    // 畳んでいる間は中身を見せない。
+    await expect(help.locator("li").first()).toBeHidden();
+
+    await help.locator("summary").click();
+    await expect(help.locator("li")).toHaveText([
+      ja["resident.help.notch"],
+      ja["resident.help.reopen"],
+      ja["resident.help.menu"],
+    ]);
+
+    await id(page, "setting-language").selectOption("en");
+    await expect(help.locator("summary")).toHaveText(en["resident.help.summary"]);
+    await expect(help.locator("li")).toHaveText([
+      en["resident.help.notch"],
+      en["resident.help.reopen"],
+      en["resident.help.menu"],
+    ]);
+  });
+
+  test("メニューバーのアイコンの案内は、Mac 以外では出さない", async ({ page }) => {
+    await openApp(page, { status: { ...STATUS_OK, platform: "windows", permission: null } });
+    await expect(id(page, "resident-note")).toBeVisible();
+    await expect(id(page, "resident-help")).toBeHidden();
+  });
+
+  test("製品名は Drumclack と表記する（窓のタイトルと窓の中の文言）", async ({ page }) => {
+    await openApp(page, { settings: { ...DEFAULT_SETTINGS, language: "en" } });
+    await expect(page).toHaveTitle("Drumclack");
+    for (const table of [ja, en]) {
+      for (const [key, value] of Object.entries(table)) {
+        // 設定フォルダ名（jp.etbs.drumclack）は識別子なので対象にしない。
+        expect(value.replace(/jp\.etbs\.drumclack/g, ""), key).not.toMatch(/drumclack/);
+      }
+    }
   });
 
   test("Rust が呼ぶ入口で、演奏の区画だけが開く。知らない名前は何も変えない", async ({ page }) => {

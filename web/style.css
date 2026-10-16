@@ -154,14 +154,15 @@ h1 {
   color: var(--muted);
 }
 
-/* 状態の帯 > 詳細（直近の発音・同時発音数など） */
+/* 状態の帯 > 詳細（直近の発音・同時発音数など）。常駐の案内（resident-help）も同じ見た目の畳み方を使う */
 
 .status-details {
   margin-top: 8px;
 }
 
 /* 開閉の目印は自分で描く（display を変えると、ブラウザ標準の三角が消えるため） */
-.status-details summary {
+.status-details summary,
+.resident-help summary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -172,15 +173,18 @@ h1 {
   list-style: none;
 }
 
-.status-details summary::-webkit-details-marker {
+.status-details summary::-webkit-details-marker,
+.resident-help summary::-webkit-details-marker {
   display: none;
 }
 
-.status-details summary::before {
+.status-details summary::before,
+.resident-help summary::before {
   content: "\25B8"; /* ▸ */
 }
 
-.status-details[open] summary::before {
+.status-details[open] summary::before,
+.resident-help[open] summary::before {
   content: "\25BE"; /* ▾ */
 }
 
@@ -252,7 +256,22 @@ h1 {
 }
 
 .resident-note {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.resident-help {
   margin: 0 0 12px;
+}
+
+.resident-help[hidden] {
+  display: none;
+}
+
+.resident-help-list {
+  margin: 4px 0 0;
+  padding-left: 1.2em;
   color: var(--muted);
   font-size: 0.85rem;
 }

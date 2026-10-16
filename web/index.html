@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>drumclack</title>
+    <title>Drumclack</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
@@ -51,6 +51,16 @@
 
       <!-- 窓を閉じても終了しないことは、OS の通知ではなく、この窓の中の文で伝える。 -->
       <p class="resident-note" data-testid="resident-note" data-i18n="app.resident"></p>
+
+      <!-- Mac のメニューバーのアイコンが隠れたときの入口。Mac 以外では出さない（main.js が platform で切り替える）。 -->
+      <details class="status-details resident-help" data-testid="resident-help" hidden>
+        <summary data-i18n="resident.help.summary"></summary>
+        <ul class="resident-help-list">
+          <li data-i18n="resident.help.notch"></li>
+          <li data-i18n="resident.help.reopen"></li>
+          <li data-i18n="resident.help.menu"></li>
+        </ul>
+      </details>
 
       <!-- 設定の保存・読み込みの通知。どの区画を開いていても見える場所に置く。 -->
       <div class="notices" data-testid="notices">

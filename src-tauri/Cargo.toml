@@ -1,7 +1,7 @@
 [package]
 name = "drumclack"
-version = "0.1.0"
-description = "常駐型タイピングドラム アプリの成立性検証プロトタイプ"
+version = "1.0.0"
+description = "キーを押すたびにドラムの音が鳴る、常駐型のタイピングドラムアプリ"
 edition = "2021"
 rust-version = "1.77"
 

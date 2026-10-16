@@ -225,9 +225,9 @@ pub fn menu_text(lang: MenuLang) -> &'static MenuText {
         open_play: "演奏モードを開く",
         launch_at_login: "ログイン時に起動",
         quit: "終了",
-        tooltip_on: "drumclack: オン",
-        tooltip_off: "drumclack: オフ",
-        tooltip_problem: "drumclack: 問題あり（設定を開いて確認）",
+        tooltip_on: "Drumclack: オン",
+        tooltip_off: "Drumclack: オフ",
+        tooltip_problem: "Drumclack: 問題あり（設定を開いて確認）",
     };
     static EN: MenuText = MenuText {
         enabled: "On",
@@ -235,9 +235,9 @@ pub fn menu_text(lang: MenuLang) -> &'static MenuText {
         open_play: "Open Play Mode",
         launch_at_login: "Launch at Login",
         quit: "Quit",
-        tooltip_on: "drumclack: On",
-        tooltip_off: "drumclack: Off",
-        tooltip_problem: "drumclack: Problem (open Settings to check)",
+        tooltip_on: "Drumclack: On",
+        tooltip_off: "Drumclack: Off",
+        tooltip_problem: "Drumclack: Problem (open Settings to check)",
     };
     match lang {
         MenuLang::Ja => &JA,
