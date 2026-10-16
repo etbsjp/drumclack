@@ -31,8 +31,10 @@ Builds are made by GitHub Actions. Open the repository's **Actions** tab, open t
 
 | OS | Artifact | Inside |
 |---|---|---|
-| macOS | `drumclack-macos` | `Drumclack_1.0.0_*.dmg` (contains `Drumclack.app`) |
+| macOS | `drumclack-macos` | `Drumclack_1.0.0_aarch64.dmg` (contains `Drumclack.app`) |
 | Windows | `drumclack-windows` | `Drumclack_1.0.0_*.msi` (installer) |
+
+The macOS build is for **Apple silicon** Macs (M1 or later) only. It does not run on Intel-based Macs.
 
 These builds are **not code-signed by a paid developer account** (macOS: ad-hoc signature only, not notarized;
 Windows: unsigned). That keeps Drumclack free, but your OS shows a warning the first time. This is expected.
@@ -243,8 +245,10 @@ Drumclack は、キーを押すたびにドラムの音が鳴る、Mac と Windo
 
 | OS | 成果物 | 中身 |
 |---|---|---|
-| macOS | `drumclack-macos` | `Drumclack_1.0.0_*.dmg`（`Drumclack.app` が入っています） |
+| macOS | `drumclack-macos` | `Drumclack_1.0.0_aarch64.dmg`（`Drumclack.app` が入っています） |
 | Windows | `drumclack-windows` | `Drumclack_1.0.0_*.msi`（インストーラ） |
+
+Mac 版は **Apple シリコン**（M1 以降）の Mac 用です。Intel プロセッサの Mac では動きません。
 
 この配布物は、有料の開発者アカウントでの署名をしていません（Mac は署名の識別子だけの署名で、公証もしていません。
 Windows は署名なしです）。無料で配るための割り切りで、初回にだけ OS の警告が出ます。これは想定どおりの動きです。
