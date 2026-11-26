@@ -109,7 +109,9 @@ h1 {
   border: 1px solid var(--border);
   border-left-width: 6px;
   border-radius: 6px;
-  padding: 10px 14px;
+  /* 見えている端どうしで、枠の内側（上下左右）が帯の中の最大の間隔（問題どうし・問題 → 「詳細」）以上になるようにする。
+     上は1行目の文字の上の余分、下は「詳細」の見出しや項目の文字の下の余分が加わるので、その分だけ上下の値を変えて揃える */
+  padding: 16px 20px 13px;
 }
 
 .status-band[data-state="ok"] {
@@ -157,7 +159,7 @@ h1 {
 /* 状態の帯 > 詳細（直近の発音・同時発音数など）。常駐の案内（resident-help）も同じ見た目の畳み方を使う */
 
 .status-details {
-  margin-top: 8px;
+  margin-top: 7px;
 }
 
 /* 開閉の目印は自分で描く（display を変えると、ブラウザ標準の三角が消えるため） */
@@ -188,8 +190,15 @@ h1 {
   content: "\25BE"; /* ▾ */
 }
 
+/* 押せる範囲（上下の padding）は残したまま、下の padding の分は後ろの間隔に足さない。
+   見出し → 中身 を、状態の文 → 見出し より狭くするため */
+.status-band summary {
+  margin-bottom: -4px;
+}
+
 .status-detail-list {
-  margin: 8px 0 0;
+  margin: 4px 0 0;
+  padding-bottom: 3px; /* 開いた状態の下の余白を、閉じた状態（見出しの文字の下の余分がある）と揃える */
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px 16px;
@@ -443,11 +452,14 @@ select {
   border-radius: 6px;
 }
 
-/* 許可の案内（3段の手順）。ボタンは窓の幅が狭くても折り返せるようにする。 */
+/* 許可の案内（3段の手順）。ボタンは窓の幅が狭くても折り返せるようにする。
+   見えている端どうしで、手順の中（ボタン → その下の文） < 手順どうし < 手順 → 補足文 < 問題どうし にする。
+   手順は1行で収まる文なので、行の高さを詰めて文字の上下の余分で手順どうしが広がらないようにする */
 .issue-steps {
-  margin: 8px 0 0;
+  margin: 10px 0 0;
   padding-left: 22px;
   font-weight: 400;
+  line-height: 1.4;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -457,7 +469,7 @@ select {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 12px;
+  gap: 3px 12px;
 }
 
 .issue-button {
@@ -477,7 +489,7 @@ select {
 
 .issue-note {
   display: block;
-  margin-top: 8px;
+  margin-top: 10px;
   font-size: 12px;
   font-weight: 400;
   color: var(--muted);

@@ -180,6 +180,157 @@ test.describe("状態の帯", () => {
 });
 
 // ============================================================================
+// 状態の帯の余白（枠の内側と、帯の中のまとまり）
+// ============================================================================
+
+test.describe("状態の帯の余白", () => {
+  // 帯の中で見えているもの（文字の箱とボタンの枠）を上から順に行にまとめ、行どうしの距離を測る。
+  // 行には「どの問題の、どの部分か」の名前を付ける（例: issue0.step1.msg、summary、dt）。
+  const measureBandGaps = (page) =>
+    page.evaluate(() => {
+      const band = document.querySelector('[data-testid="status-band"]');
+      const partOf = (el) => {
+        const issue = el.closest(".status-issues > li");
+        if (!issue) return el.closest("summary") ? "summary" : el.closest("dt") ? "dt" : "dd";
+        const prefix = `issue${[...issue.parentElement.children].indexOf(issue)}`;
+        const step = el.closest(".issue-steps > li");
+        if (step) {
+          const index = [...step.parentElement.children].indexOf(step);
+          return `${prefix}.step${index}${el.closest(".issue-step-message") ? ".msg" : ""}`;
+        }
+        if (el.closest(".action-hint")) return `${prefix}.action`;
+        if (el.closest(".issue-note")) return `${prefix}.note`;
+        if (el.closest(".detail-text")) return `${prefix}.detail`;
+        return `${prefix}.msg`;
+      };
+      const boxes = [];
+      const walker = document.createTreeWalker(band, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        if (!node.data.trim() || !node.parentElement.checkVisibility()) continue; // 畳んだ「詳細」の中は数えない
+        if (node.parentElement.closest("button")) continue; // ボタンは枠で測る
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const r of range.getClientRects()) {
+          boxes.push({ part: partOf(node.parentElement), top: r.top, bottom: r.bottom, left: r.left, right: r.right });
+        }
+      }
+      for (const button of band.querySelectorAll("button")) {
+        const r = button.getBoundingClientRect();
+        boxes.push({ part: partOf(button), top: r.top, bottom: r.bottom, left: r.left, right: r.right });
+      }
+      // 同じ部分で縦に重なるもの（手順の文とボタン、同じ行の文字）は1行にまとめる。
+      const rows = [];
+      for (const b of boxes.sort((x, y) => x.top - y.top)) {
+        const row = rows.find((r) => r.part === b.part && b.top < r.bottom && r.top < b.bottom);
+        if (row) {
+          row.top = Math.min(row.top, b.top);
+          row.bottom = Math.max(row.bottom, b.bottom);
+        } else {
+          rows.push({ ...b });
+        }
+      }
+      rows.sort((x, y) => x.top - y.top);
+      const r = band.getBoundingClientRect();
+      const cs = getComputedStyle(band);
+      const inner = {
+        top: r.top + parseFloat(cs.borderTopWidth),
+        bottom: r.bottom - parseFloat(cs.borderBottomWidth),
+        left: r.left + parseFloat(cs.borderLeftWidth),
+      };
+      return {
+        top: rows[0].top - inner.top,
+        bottom: inner.bottom - Math.max(...rows.map((row) => row.bottom)),
+        left: Math.min(...boxes.map((b) => b.left)) - inner.left,
+        gaps: rows.slice(1).map((row, i) => ({ from: rows[i].part, to: row.part, gap: row.top - rows[i].bottom })),
+      };
+    });
+
+  const gapOf = (g, test) => g.gaps.filter((x) => test(x.from, x.to)).map((x) => x.gap);
+  const issueOf = (part) => part.split(".")[0];
+  const stepOf = (part) => part.split(".").slice(0, 2).join(".");
+  const isStep = (part) => /\.step\d/.test(part);
+
+  // 帯に出る内容が違う表示状態（入力監視の3段の手順、手順の下の進行中・失敗の文、音の出口の問題、2つの問題が重なる）。
+  const states = [
+    { name: "正常", options: { status: STATUS_OK } },
+    { name: "未許可", options: { status: STATUS_PERMISSION_DENIED } },
+    { name: "未許可・起動し直している最中", options: { status: STATUS_PERMISSION_DENIED }, click: "status-action-restart" },
+    {
+      name: "未許可・設定を開けなかった",
+      options: { status: STATUS_PERMISSION_DENIED, failOpenSettings: true },
+      click: "status-action-openSettings",
+    },
+    { name: "音声デバイス失敗", options: { status: STATUS_AUDIO_FAILED } },
+    {
+      name: "未許可と音声デバイス失敗",
+      options: { status: { ...STATUS_PERMISSION_DENIED, audio: STATUS_AUDIO_FAILED.audio } },
+    },
+  ];
+
+  for (const width of [900, 960]) {
+    for (const lang of ["ja", "en"]) {
+      test(`枠の内側の余白は中の最大の間隔以上、「詳細」の見出し → 中身 < 状態 → 「詳細」、グループの内 < 間（${lang}・${width}px）`, async ({
+        context,
+      }) => {
+        for (const state of states) {
+          // 表示状態ごとに新しいタブで開く（差し替えの仕組みを重ねて読み込まないように）。
+          const page = await context.newPage();
+          await page.setViewportSize({ width, height: 680 });
+          await openApp(page, { ...state.options, settings: { ...DEFAULT_SETTINGS, language: lang } });
+          if (state.click) await id(page, state.click).click();
+
+          for (const open of [false, true]) {
+            if (open) await id(page, "status-details").locator("summary").click();
+            const g = await measureBandGaps(page);
+            const where = `${state.name}・詳細を${open ? "開いた" : "閉じた"}状態: ${JSON.stringify(g)}`;
+            const maxGap = Math.max(...g.gaps.map((x) => x.gap));
+
+            // (a) 枠の内側（上・下・左）は、中の最大の間隔以上。上と下は揃える。
+            expect(g.top, where).toBeGreaterThanOrEqual(maxGap - 1);
+            expect(g.bottom, where).toBeGreaterThanOrEqual(maxGap - 1);
+            expect(g.left, where).toBeGreaterThanOrEqual(maxGap - 1);
+            expect(Math.abs(g.top - g.bottom), where).toBeLessThanOrEqual(3);
+
+            // (b) 「詳細」の見出し → 中身 は、状態 → 「詳細」の見出し より狭い。
+            const toSummary = gapOf(g, (from, to) => to === "summary");
+            if (open) {
+              const summaryToItem = gapOf(g, (from) => from === "summary");
+              expect(Math.max(...summaryToItem), where).toBeLessThan(Math.min(...toSummary));
+            }
+
+            // 問題の中の間隔 < 問題どうし ≦ 問題 → 「詳細」。
+            const withinIssue = gapOf(g, (from, to) => issueOf(from) === issueOf(to) && from !== "summary");
+            const betweenIssues = gapOf(
+              g,
+              (from, to) => from.startsWith("issue") && to.startsWith("issue") && issueOf(from) !== issueOf(to),
+            );
+            if (withinIssue.length && betweenIssues.length) {
+              expect(Math.min(...betweenIssues), where).toBeGreaterThan(Math.max(...withinIssue));
+            }
+            if (withinIssue.length) {
+              expect(Math.min(...toSummary), where).toBeGreaterThan(Math.max(...withinIssue));
+            }
+
+            // 手順: 1つの手順の中（ボタン → その下の文） < 手順どうし < 手順 → 補足文。
+            const withinStep = gapOf(g, (from, to) => isStep(from) && stepOf(from) === stepOf(to));
+            const betweenSteps = gapOf(g, (from, to) => isStep(from) && isStep(to) && stepOf(from) !== stepOf(to));
+            const stepsToNote = gapOf(g, (from, to) => isStep(from) && to.endsWith(".note"));
+            if (withinStep.length) {
+              expect(Math.min(...betweenSteps), where).toBeGreaterThan(Math.max(...withinStep));
+            }
+            if (stepsToNote.length) {
+              expect(Math.min(...stepsToNote), where).toBeGreaterThan(Math.max(...betweenSteps));
+            }
+          }
+          await page.close();
+        }
+      });
+    }
+  }
+});
+
+// ============================================================================
 // 許可の案内（未許可／許可済みで未発音／発音済みの3状態）
 // ============================================================================
 
