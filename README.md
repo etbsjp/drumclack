@@ -43,7 +43,7 @@ Windows: unsigned). That keeps Drumclack free, but your OS shows a warning the f
 
 1. Open the `.dmg` and drag `Drumclack.app` into the `Applications` folder.
 2. Open Drumclack from `Applications`. macOS says **"Drumclack" Not Opened** (or "cannot be opened because the developer
-   cannot be verified"). Do not move it to the Trash. Close the message.
+   cannot be verified"). Do not press **Move to Trash**. Press **Done** to close the message.
 3. Open **System Settings > Privacy & Security**, scroll down to the Security section, and press **Open Anyway**
    next to the message about Drumclack. Enter your password, then press **Open**.
    - On macOS 14 and earlier you can instead right-click (Control-click) `Drumclack.app`, choose **Open**, then **Open** again.
@@ -256,8 +256,8 @@ Windows は署名なしです）。無料で配るための割り切りで、初
 ### Mac
 
 1. `.dmg` を開き、`Drumclack.app` を `アプリケーション` フォルダへドラッグします。
-2. `アプリケーション` から Drumclack を開きます。**「"Drumclack"は開けません」**（または「開発元を検証できないため開けません」）と出ます。
-   「ゴミ箱に入れる」は押さず、メッセージを閉じます。
+2. `アプリケーション` から Drumclack を開きます。**「“Drumclack” は開いていません」**（または「開発元を検証できないため開けません」）と出ます。
+   「ゴミ箱に入れる」は押さず、**「完了」** を押してメッセージを閉じます。
 3. **システム設定 > プライバシーとセキュリティ** を開き、下へスクロールしてセキュリティの欄にある、Drumclack についての
    メッセージの横の **「このまま開く」** を押します。パスワードを入力し、**「開く」** を押します。
    - macOS 14 以前では、`Drumclack.app` を右クリック（control を押しながらクリック）→ **「開く」** → もう一度 **「開く」** でも開けます。
