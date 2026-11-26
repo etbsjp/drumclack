@@ -55,6 +55,13 @@ Windows: unsigned). That keeps Drumclack free, but your OS shows a warning the f
 Drumclack shows its window with Microsoft's WebView2 Runtime. Windows 11 already has it. On Windows without it (mainly
 older Windows 10), install the WebView2 Runtime from Microsoft first. The Drumclack installer does not install it.
 
+- **To check whether it is installed:** open Windows **Settings** and the list of installed apps, and look for
+  **Microsoft Edge WebView2 Runtime**. (The name of that screen is different between Windows 10 and Windows 11.)
+- **To install it:** open Microsoft's
+  [WebView2 page](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download). In
+  **Download the WebView2 Runtime**, choose **Evergreen Bootstrapper** and press its **Download** button, then run the
+  downloaded file. It fetches the runtime from Microsoft, so the PC needs an internet connection while it runs.
+
 1. Double-click the `.msi`. If Windows shows **"Windows protected your PC"** (Microsoft Defender SmartScreen), press
    **More info**, then **Run anyway**. The "Unknown publisher" prompt that follows is for the same reason; accept it to install.
 2. Start Drumclack from the Start menu. The window opens. No permission setup is needed on Windows.
@@ -114,6 +121,9 @@ macOS does not tell you when this happens. You can still reach everything:
   tccutil reset ListenEvent jp.etbs.drumclack
   ```
 
+- **On Windows, no window opens the first time I start it after installing.** First check that the WebView2 Runtime is
+  installed, and install it if it is not. See [Windows](#windows) above for how to check and where to get it.
+  (This is about the first launch. From the second launch on, no window is normal; see the next item.)
 - **Nothing happens when I start it.** From the second launch on the window stays closed on purpose; look for the icon
   or just type. Open the app once more to bring up the window.
 - **It started and quit again right away on a Mac.** If you quit and start it within a second or two, macOS can fail the
@@ -285,6 +295,12 @@ Windows は署名なしです）。無料で配るための割り切りで、初
 Drumclack の窓は、Microsoft の WebView2 ランタイムで表示します。Windows 11 には最初から入っています。入っていない Windows
 （主に古い Windows 10）では、先に Microsoft の WebView2 ランタイムを入れてください。Drumclack のインストーラは、これを入れません。
 
+- **入っているかの確かめ方:** Windows の **設定** で、入っているアプリの一覧を開き、**Microsoft Edge WebView2 Runtime** が
+  あるかを見ます（一覧の画面の名前は、Windows 10 と Windows 11 で違います）。
+- **入れ方:** Microsoft の [WebView2 のページ](https://developer.microsoft.com/ja-jp/microsoft-edge/webview2/#download) を開き、
+  **「WebView2 ランタイムをダウンロードする」** の中の **「Evergreen ブートストラップ」** の **「ダウンロード」** を押して、
+  ダウンロードしたファイルを実行します。実行中に Microsoft からランタイムを取ってくるので、インターネットにつながっている必要があります。
+
 1. `.msi` をダブルクリックします。**「Windows によって PC が保護されました」**（Microsoft Defender SmartScreen）と出たら、
    **「詳細情報」** → **「実行」** を押します。続けて出る「発行元不明」の確認も同じ理由なので、許可してインストールします。
 2. スタートメニューから Drumclack を起動します。窓が開きます。Windows には許可の手順はありません。
@@ -340,6 +356,8 @@ Drumclack の窓は、Microsoft の WebView2 ランタイムで表示します�
   tccutil reset ListenEvent jp.etbs.drumclack
   ```
 
+- **Windows で、入れて最初に起動したのに窓が出ない。** まず WebView2 ランタイムが入っているかを確かめ、入っていなければ入れてください。
+  確かめ方と入手先は、上の「入れ方」の「Windows」の節にあります（これは最初の起動の話です。2回目以降に窓が出ないのは正常で、次の項のとおりです）。
 - **起動したのに何も出ない。** 2回目以降は窓を出さないのが仕様です。アイコンを探すか、そのまま打ってみてください。
   窓を出したいときは、アプリをもう一度開きます。
 - **Mac で、終了してすぐ起動したら起動に失敗した。** 終了してすぐ起動すると、macOS が起動に失敗する（エラー -600）ことがあります。
