@@ -876,8 +876,8 @@ test.describe("常駐との接点", () => {
     await expect(id(page, "resident-note")).toHaveText(en["app.resident"]);
     expect(ja["app.resident"]).not.toBe(en["app.resident"]);
     // 短い脚注であること（長い説明にしない）。
-    expect(ja["app.resident"].length).toBeLessThanOrEqual(90);
-    expect(en["app.resident"].length).toBeLessThanOrEqual(200);
+    expect(ja["app.resident"].length).toBeLessThanOrEqual(60);
+    expect(en["app.resident"].length).toBeLessThanOrEqual(130);
   });
 
   test("常駐の文は、状態の帯より下に置く（見出しの直下で警告に先立たない）", async ({ page }) => {
@@ -919,6 +919,22 @@ test.describe("常駐との接点", () => {
     await openApp(page, { status: { ...STATUS_OK, platform: "windows", permission: null } });
     await expect(id(page, "resident-note")).toBeVisible();
     await expect(id(page, "resident-help")).toBeHidden();
+  });
+
+  test("常駐の文に、Mac にしか無い左上のメニューの案内を入れない（Windows で、日英とも）", async ({ page }) => {
+    await openApp(page, {
+      status: { ...STATUS_OK, platform: "windows", permission: null },
+      settings: { ...DEFAULT_SETTINGS, language: "ja" },
+    });
+    const note = id(page, "resident-note");
+    await expect(note).toHaveText(ja["app.resident"]);
+    await expect(note).not.toContainText("左上");
+    await expect(note).not.toContainText("Drumclack のメニュー");
+
+    await id(page, "setting-language").selectOption("en");
+    await expect(note).toHaveText(en["app.resident"]);
+    await expect(note).not.toContainText("top left");
+    await expect(note).not.toContainText("Drumclack menu");
   });
 
   test("製品名は Drumclack と表記する（窓のタイトルと窓の中の文言）", async ({ page }) => {

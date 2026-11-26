@@ -1,10 +1,10 @@
 {
   "app.title": "Drumclack",
-  "app.resident": "Closing this window does not quit Drumclack; it keeps running in the menu bar / tray. To quit, use Quit in the icon's menu, or in the Drumclack menu at the top left of the screen.",
+  "app.resident": "Closing this window does not quit Drumclack; it keeps running in the menu bar / tray. To quit, use Quit in the icon's menu.",
   "resident.help.summary": "If the menu bar icon is not visible",
   "resident.help.notch": "On a Mac with a notch, when the menu bar has many icons, the Drumclack icon can end up hidden behind the notch.",
   "resident.help.reopen": "While this window is closed, open Drumclack again and this settings window appears.",
-  "resident.help.menu": "While this window is open, use the Drumclack menu at the top left of the screen to choose \"Open Settings\" or \"Open Play Mode\".",
+  "resident.help.menu": "While this window is open, use the Drumclack menu at the top left of the screen to choose \"Open Settings\" or \"Open Play Mode\". \"Quit\" is in the same menu.",
   "common.close": "Close",
   "nav.label": "Sections",
   "nav.settings": "Settings",

@@ -52,6 +52,9 @@ Windows: unsigned). That keeps Drumclack free, but your OS shows a warning the f
 
 ### Windows
 
+Drumclack shows its window with Microsoft's WebView2 Runtime. Windows 11 already has it. On Windows without it (mainly
+older Windows 10), install the WebView2 Runtime from Microsoft first. The Drumclack installer does not install it.
+
 1. Double-click the `.msi`. If Windows shows **"Windows protected your PC"** (Microsoft Defender SmartScreen), press
    **More info**, then **Run anyway**. The "Unknown publisher" prompt that follows is for the same reason; accept it to install.
 2. Start Drumclack from the Start menu. The window opens. No permission setup is needed on Windows.
@@ -132,10 +135,23 @@ macOS does not tell you when this happens. You can still reach everything:
   networking or auto-update library is added.
 - The window's "Details" shows only the time of the last sound and the number of sounds playing at once. The Play screen
   lights a pad with the name of the sound that played. The screen is never given key positions.
-- The only file Drumclack writes is its settings file (below). It holds your settings and assignments, not a typing history.
+- Drumclack's own code writes only these files, all in its settings folder (`jp.etbs.drumclack`; see
+  [Settings file](#settings-file) for where it is). None of them contains key positions, key press times, or typed characters.
+  - `settings.json`: your settings and assignments. It is first written to `settings.json.tmp` and then replaces the old file.
+  - `settings.broken.json` (the one before it is kept as `settings.broken.json.1`): a settings file that could not be read, set aside.
+  - `settings.v{n}.json`: a copy of a settings file made by a newer version of Drumclack, kept before saving over it.
+  - `show_window_next_launch`: a marker left when you press **Restart** in the window. The next launch reads it and deletes it.
+- Only when you turn on **Launch at Login**, Drumclack registers itself to start at login: on macOS a `.plist` file in
+  `~/Library/LaunchAgents/`, on Windows a value under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`.
+  It holds what is needed to start the app, such as its name and location, and nothing about your typing. Turning it
+  off removes that registration (on Windows, the value Drumclack wrote under `...\Explorer\StartupApproved\Run` for
+  Task Manager's Startup list stays).
+- The parts of the OS that show the window (WKWebView on macOS, WebView2 on Windows) may keep data of their own; that is not
+  part of the list above.
 - The console log (visible only if you start the app from a terminal) contains no key positions, times, or typed
-  characters. When the audio output is rebuilt it prints only the sample rate and the number of channels, not the name of
-  your device (a Bluetooth device's name can contain your own name).
+  characters. When the audio output is opened or rebuilt, it prints the name of the reason for rebuilding (such as
+  `default_output_changed`), the sample rate, the number of channels, the buffer length (in frames), and the error message
+  if it fails. Drumclack does not print the name of your device (a Bluetooth device's name can contain your own name).
 - Input Monitoring on macOS lets the system deliver key events to Drumclack. You can turn it off at any time in
   System Settings.
 
@@ -266,6 +282,9 @@ Windows は署名なしです）。無料で配るための割り切りで、初
 
 ### Windows
 
+Drumclack の窓は、Microsoft の WebView2 ランタイムで表示します。Windows 11 には最初から入っています。入っていない Windows
+（主に古い Windows 10）では、先に Microsoft の WebView2 ランタイムを入れてください。Drumclack のインストーラは、これを入れません。
+
 1. `.msi` をダブルクリックします。**「Windows によって PC が保護されました」**（Microsoft Defender SmartScreen）と出たら、
    **「詳細情報」** → **「実行」** を押します。続けて出る「発行元不明」の確認も同じ理由なので、許可してインストールします。
 2. スタートメニューから Drumclack を起動します。窓が開きます。Windows には許可の手順はありません。
@@ -339,9 +358,21 @@ Windows は署名なしです）。無料で配るための割り切りで、初
   CSP（コンテンツセキュリティポリシー）で止めています。通信系・自動更新系のライブラリが入ると CI が落ちるようにしてあります。
 - 窓の「詳細」に出るのは、直近の発音の時刻と同時発音数だけです。演奏の画面は、鳴った音の名前でパッドを光らせます。
   画面には、キーの位置を渡しません。
-- Drumclack が書くファイルは、設定ファイル（下）だけです。入っているのは設定と割り当てで、打鍵の履歴ではありません。
-- 端末のログ（アプリを端末から起動したときだけ見えます）には、キーの位置・時刻・打った文字を出しません。音の出口を作り直したときの
-  ログに出すのは、サンプルレートとチャンネル数だけで、機器の名前は出しません（Bluetooth 機器の名前には持ち主の名前が入ることがあるため）。
+- Drumclack のコードが書くファイルは、設定フォルダ（`jp.etbs.drumclack`。場所は下の「設定ファイル」）の中の次のものだけです。
+  どれにも、キーの位置・打鍵の時刻・打った文字は入りません。
+  - `settings.json`: 設定と割り当て。一度 `settings.json.tmp` へ書いてから置き換えます。
+  - `settings.broken.json`（その前のものは `settings.broken.json.1`）: 読めなかった設定ファイルの退避先。
+  - `settings.v{n}.json`: Drumclack の新しい版が作った設定ファイルを、上書きする前に残した写し。
+  - `show_window_next_launch`: 窓の「起動し直す」を押したときに残す印。次の起動が読んで消します。
+- 「ログイン時に起動」をオンにしたときだけ、OS のログイン時の起動に Drumclack を登録します（Mac は `~/Library/LaunchAgents/` の
+  `.plist` ファイル、Windows はレジストリの `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` の値）。
+  中身はアプリの名前と場所などの起動の指定で、打鍵の情報は入りません。オフにすると、この登録を消します
+  （Windows では、タスクマネージャーのスタートアップの欄のために `...\Explorer\StartupApproved\Run` へ書いた値は残ります）。
+- 窓を表示する OS の部品（Mac は WKWebView、Windows は WebView2）が自分で持つデータは、上の一覧に入れていません。
+- 端末のログ（アプリを端末から起動したときだけ見えます）には、キーの位置・時刻・打った文字を出しません。音の出口を開いたとき・
+  作り直したときのログに出すのは、作り直した理由の名前（`default_output_changed` など）、サンプルレート、チャンネル数、
+  バッファの長さ（フレーム数）と、失敗したときのエラーの文です。機器の名前は出しません（Bluetooth 機器の名前には持ち主の名前が
+  入ることがあるため）。
 - Mac の入力監視は、OS がキーの押下を Drumclack へ渡す許可です。システム設定でいつでもオフにできます。
 
 ## 設定ファイル
@@ -495,6 +526,9 @@ macOS 10.15+ で公開されている API）を使っています。これはプ
 
 通信が混ざらないことは CI で固定しています（`tools/ci/`）。依存に通信系・自動更新系のクレートが
 入ったとき、`tauri.conf.json` の CSP が決めた値から変わったときに落ちます。
+Windows のインストーラは WebView2 を取りに行きません（`tauri.conf.json` の `bundle.windows.webviewInstallMode` を `skip`）。
+CI（`.github/workflows/build.yml`）は、生成されたインストーラの定義（`src-tauri/target/release/wix/` の `main.wxs`）に
+外部から取得する手順が無いことを検査し、定義が見つからないときも落ちます。
 
 ### キーの割り当て（`src-tauri/src/assignment.rs`）
 

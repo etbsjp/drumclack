@@ -1,10 +1,10 @@
 {
   "app.title": "Drumclack",
-  "app.resident": "窓を閉じても終了しません（メニューバー／トレイで動き続けます）。終了はアイコンのメニュー、または画面左上の Drumclack のメニューの「終了」から。",
+  "app.resident": "窓を閉じても終了しません（メニューバー／トレイで動き続けます）。終了はアイコンのメニューの「終了」から。",
   "resident.help.summary": "メニューバーにアイコンが見えないとき",
   "resident.help.notch": "画面上部に切り欠きのある Mac では、メニューバーのアイコンが多いと、Drumclack のアイコンが切り欠きの裏に隠れることがあります。",
   "resident.help.reopen": "窓を閉じているときは、Drumclack をもう一度開くと、この設定の窓が出ます。",
-  "resident.help.menu": "この窓が出ているときは、画面左上の Drumclack のメニューから「設定を開く」「演奏モードを開く」を選べます。",
+  "resident.help.menu": "この窓が出ているときは、画面左上の Drumclack のメニューから「設定を開く」「演奏モードを開く」を選べます。「終了」も同じメニューにあります。",
   "common.close": "閉じる",
   "nav.label": "区画",
   "nav.settings": "設定",

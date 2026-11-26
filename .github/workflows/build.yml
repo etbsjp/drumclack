@@ -39,19 +39,21 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
 
       # 配布物を作る Tauri CLI を npx で動かすためだけに使う（アプリ本体のビルドには Node.js は不要）。
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -98,6 +100,29 @@ jobs:
           trap 'hdiutil detach "$mount_point" || true' EXIT
           check_app "$mount_point/Drumclack.app"
 
+      # 生成されたインストーラの定義（WiX の main.wxs。Tauri CLI 2.11.5 は target/release/wix/<アーキテクチャ>/ に書く）に、
+      # 外部から取得する手順が無いことを確かめる。tauri.conf.json の bundle.windows.webviewInstallMode（skip）と対になる検査。
+      # main.wxs が見つからないときも落とす（出力先が変わって何も調べずに通るのを防ぐ）。
+      - name: Check the MSI definition has no download step
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path src-tauri/target/release/wix -Recurse -Filter main.wxs -ErrorAction SilentlyContinue)
+          if ($files.Count -eq 0) { throw 'main.wxs was not found under src-tauri/target/release/wix' }
+          $pattern = 'Invoke-WebRequest|go\.microsoft\.com|fwlink|WebView2Setup|WebView2RuntimeInstaller|EDGEUPDATE'
+          foreach ($file in $files) {
+            Write-Host "--- $($file.FullName)"
+            if (-not (Select-String -Path $file.FullName -Pattern '<Wix' -SimpleMatch -Quiet)) {
+              throw "not a WiX source: $($file.FullName)"
+            }
+            $hits = @(Select-String -Path $file.FullName -Pattern $pattern)
+            if ($hits.Count -gt 0) {
+              $hits | ForEach-Object { Write-Host $_.Line }
+              throw "download step found in $($file.FullName)"
+            }
+          }
+          Write-Host "OK: no download step in $($files.Count) MSI definition(s)"
+
       # 配布物（.msi）から実際にインストールして、実行ファイルと版数を確かめる。
       - name: Install the MSI and check the installed app
         if: runner.os == 'Windows'
@@ -134,7 +159,7 @@ jobs:
           Stop-Process -Id $p.Id -Force
 
       - name: Upload unsigned/ad-hoc signed distributable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact_label }}
           path: ${{ matrix.bundle_path }}
@@ -148,7 +173,7 @@ jobs:
           DRUMCLACK_WAV_DIR: ${{ github.workspace }}/wav-out
 
       - name: Upload drum sound WAVs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: drum-wavs-${{ matrix.artifact_label }}
           path: wav-out/*.wav
