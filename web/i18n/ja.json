@@ -17,7 +17,7 @@
   "status.permission.steps": "次の3つを順に行ってください。",
   "status.permission.stepOpen": "システム設定の入力監視で、Drumclack をオンにする。",
   "status.permission.stepOpen.button": "入力監視の設定を開く",
-  "status.permission.stepRestart": "許可したら、「起動し直す」を押す（押すまで反映されません）。",
+  "status.permission.stepRestart": "許可したら、「起動し直す」を押す。",
   "status.permission.stepRestart.button": "起動し直す",
   "status.permission.stepPress": "起動し直したら、何かキーを押す。ドラムが鳴れば完了です。",
   "status.permission.reset": "更新したあとなど、Drumclack が一覧にあるのに許可されないときは、スイッチのオン・オフでは直りません。一覧から Drumclack を選んで「−」ボタンで消し、「+」ボタンで追加し直してから、「起動し直す」を押してください。",

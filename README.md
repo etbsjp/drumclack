@@ -87,7 +87,7 @@ never changes System Settings by itself.
 While the permission is missing, the top of the window shows 3 steps:
 
 1. Press **Open Input Monitoring settings**. In System Settings > Input Monitoring, turn on Drumclack.
-2. After allowing it, press **Restart**. The change does not apply until you restart.
+2. After allowing it, press **Restart**.
 3. After restarting, press any key. If you hear a drum, you are done.
 
 ### After every update, allow it again
@@ -324,7 +324,7 @@ Drumclack の窓は、Microsoft の WebView2 ランタイムで表示します�
 許可されていない間は、窓の上部に3段の手順が出ます。
 
 1. 「入力監視の設定を開く」を押し、システム設定の入力監視で、Drumclack をオンにする。
-2. 許可したら、「起動し直す」を押す（押すまで反映されません）。
+2. 許可したら、「起動し直す」を押す。
 3. 起動し直したら、何かキーを押す。ドラムが鳴れば完了です。
 
 ### 更新したら、そのたびに許可し直す

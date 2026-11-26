@@ -17,7 +17,7 @@
   "status.permission.steps": "Follow these 3 steps in order.",
   "status.permission.stepOpen": "In System Settings > Input Monitoring, turn on Drumclack.",
   "status.permission.stepOpen.button": "Open Input Monitoring settings",
-  "status.permission.stepRestart": "After allowing it, press \"Restart\" (the change does not apply until you restart).",
+  "status.permission.stepRestart": "After allowing it, press \"Restart\".",
   "status.permission.stepRestart.button": "Restart",
   "status.permission.stepPress": "After restarting, press any key. If you hear a drum, you are done.",
   "status.permission.reset": "If Drumclack is already in the list but is still not allowed (for example after an update), switching it off and on does not fix it. Select Drumclack in the list and remove it with the \"−\" button, add it again with the \"+\" button, then press \"Restart\".",

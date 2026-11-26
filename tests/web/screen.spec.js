@@ -937,6 +937,91 @@ test.describe("常駐との接点", () => {
     await expect(note).not.toContainText("Drumclack menu");
   });
 
+  // 余白は文字の箱（行の箱ではなく、文字そのものの高さの範囲）どうしの距離で比べる。
+  // 状態の帯 → 注記 > 注記 → 案内の見出し > 見出し → 1つ目の文、文と文の間 > 文の中の行間、まとまり → 次の要素が最も広い。
+  const measureResidentGaps = (page) =>
+    page.evaluate(() => {
+      const textLines = (el) => {
+        const lines = [];
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+          if (!node.data.trim()) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          for (const r of range.getClientRects()) {
+            const line = lines.find((l) => Math.abs(l.top - r.top) < 2);
+            if (line) line.bottom = Math.max(line.bottom, r.bottom);
+            else lines.push({ top: r.top, bottom: r.bottom });
+          }
+        }
+        return lines.sort((a, b) => a.top - b.top);
+      };
+      const q = (sel) => document.querySelector(sel);
+      const help = q('[data-testid="resident-help"]');
+      const helpShown = !help.hidden;
+      const note = textLines(q('[data-testid="resident-note"]'));
+      const summary = helpShown ? textLines(help.querySelector("summary")) : [];
+      const items = helpShown && help.open ? [...help.querySelectorAll("li")].map(textLines) : [];
+      const groupBottom = items.length ? items.at(-1).at(-1).bottom : (summary.at(-1) || note.at(-1)).bottom;
+      const notice = [...document.querySelectorAll('[data-testid="notices"] > *')].find((e) => !e.hidden);
+      const nextTop = notice ? notice.getBoundingClientRect().top : textLines(q(".tabs .tab"))[0].top;
+      const innerGaps = items.flatMap((lines) => lines.slice(1).map((l, i) => l.top - lines[i].bottom));
+      return {
+        bandToNote: note[0].top - q('[data-testid="status-band"]').getBoundingClientRect().bottom,
+        noteToSummary: summary.length ? summary[0].top - note.at(-1).bottom : null,
+        summaryToItem: items.length ? items[0][0].top - summary.at(-1).bottom : null,
+        betweenItems: items.slice(1).map((lines, i) => lines[0].top - items[i].at(-1).bottom),
+        innerGaps,
+        groupToNext: nextTop - groupBottom,
+      };
+    });
+
+  for (const width of [900, 960]) {
+    for (const lang of ["ja", "en"]) {
+      test(`常駐の注記と案内の余白: 帯との間 > 注記と見出しの間 > 見出しと中身の間、文と文の間 > 行間（${lang}・${width}px）`, async ({
+        context,
+      }) => {
+        // 表示状態ごとに新しいタブで開く（差し替えの仕組みを重ねて読み込まないように）。
+        const open = async (status) => {
+          const page = await context.newPage();
+          await page.setViewportSize({ width, height: 680 });
+          await openApp(page, { status, settings: { ...DEFAULT_SETTINGS, language: lang } });
+          return page;
+        };
+        for (const status of [STATUS_OK, STATUS_PERMISSION_DENIED]) {
+          const page = await open(status);
+          const closed = await measureResidentGaps(page);
+          expect(closed.bandToNote).toBeGreaterThan(closed.noteToSummary);
+          expect(closed.groupToNext).toBeGreaterThan(closed.bandToNote);
+
+          await id(page, "resident-help").locator("summary").click();
+          const g = await measureResidentGaps(page);
+          expect(g.bandToNote).toBeGreaterThan(g.noteToSummary);
+          expect(g.summaryToItem).toBeLessThan(g.noteToSummary);
+          expect(g.innerGaps.length).toBeGreaterThan(0);
+          expect(Math.min(...g.betweenItems)).toBeGreaterThan(Math.max(...g.innerGaps));
+          expect(g.groupToNext).toBeGreaterThan(
+            Math.max(g.noteToSummary, g.summaryToItem, ...g.betweenItems),
+          );
+        }
+
+        // Windows は案内が無く、注記だけ。帯との間は Mac と同じにする。
+        const win = await measureResidentGaps(await open({ ...STATUS_OK, platform: "windows", permission: null }));
+        const mac = await measureResidentGaps(await open(STATUS_OK));
+        expect(Math.abs(win.bandToNote - mac.bandToNote)).toBeLessThan(1);
+        expect(win.groupToNext).toBeGreaterThan(win.bandToNote);
+      });
+    }
+  }
+
+  test("常駐の案内の余白は、設定の通知が出ていても、まとまり → 通知 が最も広い", async ({ page }) => {
+    await openApp(page, { recovered: true, settings: { ...DEFAULT_SETTINGS, language: "ja" } });
+    await id(page, "resident-help").locator("summary").click();
+    const g = await measureResidentGaps(page);
+    expect(g.groupToNext).toBeGreaterThan(Math.max(g.noteToSummary, g.summaryToItem, ...g.betweenItems));
+  });
+
   test("製品名は Drumclack と表記する（窓のタイトルと窓の中の文言）", async ({ page }) => {
     await openApp(page, { settings: { ...DEFAULT_SETTINGS, language: "en" } });
     await expect(page).toHaveTitle("Drumclack");
