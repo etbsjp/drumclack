@@ -54,12 +54,32 @@ pub const FALLBACK_SAMPLE_RATE: u32 = 48_000;
 
 /// 出力先の情報。見張りは、この3つのどれかが変わったら「別の出口」とみなす（比べ方は
 /// [`OutputInfo::is_same_output_as`]）。同じ名前の機器が2台つながっているときの区別はしない（名前しか取れない）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct OutputInfo {
     /// 機器名。OS が名前を返せないときは `None`（名前が取れなくても、その出口で鳴らす）。
+    /// Bluetooth 機器の名前には持ち主の名前が入ることがあるため、見張りの比較にだけ使い、ログには出さない。
     pub device_name: Option<String>,
     pub sample_rate: u32,
     pub channels: usize,
+}
+
+// `{:?}` でログに出ても機器名が漏れないよう、名前は中身を出さない（取れているかどうかだけ出す）。
+impl std::fmt::Debug for OutputInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutputInfo")
+            .field("has_device_name", &self.device_name.is_some())
+            .field("sample_rate", &self.sample_rate)
+            .field("channels", &self.channels)
+            .finish()
+    }
+}
+
+/// 出口を開けたときのログの1行。機器名は含めず、サンプルレートとチャンネル数だけを出す。
+fn output_ready_log_line(info: &OutputInfo) -> String {
+    format!(
+        "[drumclack] audio output ready: sample_rate={}Hz channels={}",
+        info.sample_rate, info.channels
+    )
 }
 
 impl OutputInfo {
@@ -312,10 +332,7 @@ impl<B: OutputBackend> OutputSupervisor<B> {
 
         match self.backend.open(&mut make_mixer, health.clone()) {
             Ok((info, stream)) => {
-                println!(
-                    "[drumclack] audio output ready: device={:?} sample_rate={}Hz channels={}",
-                    info.device_name, info.sample_rate, info.channels
-                );
+                println!("{}", output_ready_log_line(&info));
                 self.engine.set_output_status(OutputStatus::Ok { sample_rate: info.sample_rate });
                 self.last_logged_failure = None;
                 self.running = Some(Running {
@@ -486,6 +503,22 @@ mod tests {
             world.mixer.as_mut().unwrap().fill_output(&mut buf, 1);
             buf
         }
+    }
+
+    // ---- ログに機器名を出さない ----
+
+    #[test]
+    fn the_ready_log_line_does_not_contain_the_device_name() {
+        let named = info("たろうの AirPods", 48_000);
+
+        let line = output_ready_log_line(&named);
+
+        assert!(!line.contains("たろう"), "機器名がログに出ている: {line}");
+        assert!(!line.contains("AirPods"), "機器名がログに出ている: {line}");
+        assert!(line.contains("sample_rate=48000Hz"), "{line}");
+        assert!(line.contains("channels=2"), "{line}");
+        // `{:?}` で出しても名前は出ない。
+        assert!(!format!("{named:?}").contains("AirPods"));
     }
 
     // ---- 失敗 → 再試行 → 成功 ----

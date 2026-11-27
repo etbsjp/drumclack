@@ -3,9 +3,10 @@ name: Build and test
 permissions:
   contents: read
 
-# 常駐型タイピングドラムの成立性検証プロトタイプ。
-# macOS / Windows それぞれでビルドとテストを行い、未署名のビルド成果物を
-# アーティファクトとしてアップロードする。署名・インストーラー作成は行わない。
+# macOS / Windows それぞれでビルドとテストを行い、配布物（Mac は .app を収めた .dmg、Windows は .msi）を
+# アーティファクトとしてアップロードする。署名にお金はかけない（Mac は ad-hoc 署名、Windows は署名なし）。
+# ライセンス署名用の秘密鍵などの秘密の値は使わない（このワークフローは secrets を参照しない）。
+# 自動更新の仕組みは入れない（tools/ci/check_no_network_crates.sh が見張っている）。
 #
 # 公開リポジトリでActionsは無料のため、PRと main への push で常に実行する
 # （run-ci ラベルによるジョブ内 if 条件でのゲートは行わない）。
@@ -26,41 +27,142 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            artifact_name: drumclack
-            artifact_path: src-tauri/target/release/drumclack
             artifact_label: drumclack-macos
+            bundle_targets: app,dmg
+            bundle_path: src-tauri/target/release/bundle/dmg/*.dmg
           - os: windows-latest
-            artifact_name: drumclack.exe
-            artifact_path: src-tauri/target/release/drumclack.exe
             artifact_label: drumclack-windows
+            bundle_targets: msi
+            bundle_path: src-tauri/target/release/bundle/msi/*.msi
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
+
+      # 配布物を作る Tauri CLI を npx で動かすためだけに使う（アプリ本体のビルドには Node.js は不要）。
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
 
       # 注意: Windows ランナーではキー入力フックの実際の動作確認はできない
       # （GUIセッション・権限の都合）。ここではビルドが通ることのみ確認する。
       - name: Run unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --release
 
-      - name: Build release binary
-        run: cargo build --manifest-path src-tauri/Cargo.toml --release
+      # Tauri CLI の版は Tauri 本体（2.11 系）に合わせて固定する。
+      # 署名は tauri.conf.json の bundle.macOS.signingIdentity（"-" = ad-hoc 署名）で行われる。
+      - name: Build distributable bundles
+        shell: bash
+        working-directory: src-tauri
+        run: npx --yes @tauri-apps/cli@2.11.5 build --bundles ${{ matrix.bundle_targets }}
 
-      - name: Upload unsigned build artifact
-        uses: actions/upload-artifact@v4
+      # ad-hoc 署名の識別子がバンドルの識別子（jp.etbs.drumclack）と一致していないと、
+      # macOS の許可の台帳（入力監視）で食い違って見える。.app と、.dmg の中の .app の両方を確かめる。
+      - name: Check macOS signature identifier and bundle info
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_id="$(jq -r .identifier src-tauri/tauri.conf.json)"
+          expected_version="$(jq -r .version src-tauri/tauri.conf.json)"
+          bundle_dir=src-tauri/target/release/bundle
+
+          check_app() {
+            local app="$1"
+            echo "--- $app"
+            codesign -dv --verbose=4 "$app" 2>"$RUNNER_TEMP/codesign.txt" || { cat "$RUNNER_TEMP/codesign.txt"; return 1; }
+            cat "$RUNNER_TEMP/codesign.txt"
+            bash tools/ci/check_signature_identifier.sh "$RUNNER_TEMP/codesign.txt" "$expected_id"
+            codesign --verify --strict --verbose=2 "$app"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "$expected_id"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$expected_version"
+          }
+
+          check_app "$bundle_dir/macos/Drumclack.app"
+
+          dmg="$(ls "$bundle_dir"/dmg/*.dmg | head -n 1)"
+          mount_point="$RUNNER_TEMP/dmg-mount"
+          mkdir -p "$mount_point"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount_point" "$dmg"
+          trap 'hdiutil detach "$mount_point" || true' EXIT
+          check_app "$mount_point/Drumclack.app"
+
+      # 生成されたインストーラの定義（WiX の main.wxs。Tauri CLI 2.11.5 は target/release/wix/<アーキテクチャ>/ に書く）に、
+      # 外部から取得する手順が無いことを確かめる。tauri.conf.json の bundle.windows.webviewInstallMode（skip）と対になる検査。
+      # main.wxs が見つからないときも落とす（出力先が変わって何も調べずに通るのを防ぐ）。
+      - name: Check the MSI definition has no download step
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path src-tauri/target/release/wix -Recurse -Filter main.wxs -ErrorAction SilentlyContinue)
+          if ($files.Count -eq 0) { throw 'main.wxs was not found under src-tauri/target/release/wix' }
+          $pattern = 'Invoke-WebRequest|go\.microsoft\.com|fwlink|WebView2Setup|WebView2RuntimeInstaller|EDGEUPDATE'
+          foreach ($file in $files) {
+            Write-Host "--- $($file.FullName)"
+            if (-not (Select-String -Path $file.FullName -Pattern '<Wix' -SimpleMatch -Quiet)) {
+              throw "not a WiX source: $($file.FullName)"
+            }
+            $hits = @(Select-String -Path $file.FullName -Pattern $pattern)
+            if ($hits.Count -gt 0) {
+              $hits | ForEach-Object { Write-Host $_.Line }
+              throw "download step found in $($file.FullName)"
+            }
+          }
+          Write-Host "OK: no download step in $($files.Count) MSI definition(s)"
+
+      # 配布物（.msi）から実際にインストールして、実行ファイルと版数を確かめる。
+      - name: Install the MSI and check the installed app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1
+          $expectedVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $log = Join-Path $env:RUNNER_TEMP 'msi-install.log'
+          $proc = Start-Process msiexec.exe -ArgumentList '/i', "`"$($msi.FullName)`"", '/qn', '/norestart', '/l*v', "`"$log`"" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            Get-Content $log -Tail 60
+            throw "msiexec failed: $($proc.ExitCode)"
+          }
+          $exe = Get-ChildItem -Path "$env:ProgramFiles\Drumclack", "$env:LOCALAPPDATA\Drumclack" -Filter drumclack.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'drumclack.exe was not installed' }
+          Write-Host "Installed: $($exe.FullName) ProductVersion=$($exe.VersionInfo.ProductVersion)"
+          if (-not $exe.VersionInfo.ProductVersion.StartsWith($expectedVersion)) {
+            throw "version mismatch: $($exe.VersionInfo.ProductVersion) vs $expectedVersion"
+          }
+          "DRUMCLACK_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # 起動して数秒生きていることだけを見る簡易確認。ランナーには音声デバイスも入力の許可も無く、
+      # 窓の出方も保証できないため、失敗してもビルドは落とさない（人の確認項目は PR 本文に書く）。
+      # 設定ファイルは、設定が保存されたとき（最初の発音を含む）に作られるため、ここでは確かめられない。
+      - name: Smoke launch the installed app (best effort)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath $env:DRUMCLACK_EXE -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) { throw "drumclack.exe exited with code $($p.ExitCode)" }
+          Write-Host 'drumclack.exe is still running after 10 seconds'
+          Stop-Process -Id $p.Id -Force
+
+      - name: Upload unsigned/ad-hoc signed distributable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact_label }}
-          path: ${{ matrix.artifact_path }}
+          path: ${{ matrix.bundle_path }}
           if-no-files-found: error
 
       # 無料キット8音×4変種=32個の WAV を書き出す（音声デバイス不要）。
@@ -71,7 +173,7 @@ jobs:
           DRUMCLACK_WAV_DIR: ${{ github.workspace }}/wav-out
 
       - name: Upload drum sound WAVs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: drum-wavs-${{ matrix.artifact_label }}
           path: wav-out/*.wav

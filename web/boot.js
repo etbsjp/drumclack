@@ -6,8 +6,8 @@
 (function () {
   const STARTUP_TIMEOUT_MS = 5000;
   const MESSAGE = [
-    "drumclack could not start its window. Restart drumclack.",
-    "drumclack の画面を起動できませんでした。drumclack を再起動してください。",
+    "Drumclack could not start its window. Restart Drumclack.",
+    "Drumclack の画面を起動できませんでした。Drumclack を再起動してください。",
   ];
 
   function showStartupError() {
